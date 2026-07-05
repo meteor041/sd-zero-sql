@@ -2,12 +2,12 @@
 set -euo pipefail
 
 BASE_MODEL="/data/model/Qwen3-4B-Instruct-2507"
-SFT_ADAPTER="/data/huwenp/emb/lxy/ches_sql_sft/outputs/qwen3_4b_sft_lora_4k"
-TRAIN_DATA_DIR="/home/pkuccadm/huwenp/emb/lxy/ches_sql_sft/data/srt"
+SFT_ADAPTER="/data/huwenp/emb/lxy/sd-zero-sql/outputs/qwen3_4b_sft_lora_4k"
+TRAIN_DATA_DIR="/home/pkuccadm/huwenp/emb/lxy/sd-zero-sql/data/srt"
 DATA_PREFIX="ches_qwen3_4b_srt"
 STAGE1_FILE="${TRAIN_DATA_DIR}/${DATA_PREFIX}_stage1.jsonl"
 STAGE2_FILE="${TRAIN_DATA_DIR}/${DATA_PREFIX}_stage2.jsonl"
-CKPT_ROOT="/data/huwenp/emb/lxy/ches_sql_sft/outputs/qwen3_4b_srt_two_stage"
+CKPT_ROOT="/data/huwenp/emb/lxy/sd-zero-sql/outputs/qwen3_4b_srt_two_stage"
 STAGE1_OUT="${CKPT_ROOT}/stage1"
 STAGE2_OUT="${CKPT_ROOT}/stage2"
 
@@ -17,7 +17,7 @@ export NCCL_DEBUG=${NCCL_DEBUG:-WARN}
 export PYTORCH_CUDA_ALLOC_CONF=${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}
 
 mkdir -p "${STAGE1_OUT}" "${STAGE2_OUT}"
-mkdir -p /home/pkuccadm/huwenp/emb/lxy/ches_sql_sft/logs
+mkdir -p /home/pkuccadm/huwenp/emb/lxy/sd-zero-sql/logs
 
 PYTHON_BIN=${PYTHON_BIN:-/home/pkuccadm/anaconda3/bin/python}
 ACCELERATE_BIN=${ACCELERATE_BIN:-${PYTHON_BIN} -m accelerate.commands.launch}
@@ -26,7 +26,7 @@ ACCELERATE_BIN=${ACCELERATE_BIN:-${PYTHON_BIN} -m accelerate.commands.launch}
 ${ACCELERATE_BIN} \
   --num_processes 8 \
   --mixed_precision bf16 \
-  /home/pkuccadm/huwenp/emb/lxy/ches_sql_sft/scripts/srt/train_srt_stage.py \
+  /home/pkuccadm/huwenp/emb/lxy/sd-zero-sql/scripts/srt/train_srt_stage.py \
   --model-path "${BASE_MODEL}" \
   --adapter-path "${SFT_ADAPTER}" \
   --train-file "${STAGE1_FILE}" \
@@ -54,7 +54,7 @@ ${ACCELERATE_BIN} \
 ${ACCELERATE_BIN} \
   --num_processes 8 \
   --mixed_precision bf16 \
-  /home/pkuccadm/huwenp/emb/lxy/ches_sql_sft/scripts/srt/train_srt_stage.py \
+  /home/pkuccadm/huwenp/emb/lxy/sd-zero-sql/scripts/srt/train_srt_stage.py \
   --model-path "${BASE_MODEL}" \
   --adapter-path "${STAGE1_OUT}" \
   --train-file "${STAGE2_FILE}" \

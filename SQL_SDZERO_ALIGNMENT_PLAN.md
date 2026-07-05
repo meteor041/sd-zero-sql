@@ -1,13 +1,13 @@
-# CHES SQL × SD-Zero 对齐方案
+# SD-Zero SQL 对齐方案
 
-本文档说明如何在 **`ches_sql_sft`** 中实现面向 CHES Text-to-SQL 的 SD-Zero 流程，并尽量对齐官方仓库：
+本文档说明如何在 **`sd-zero-sql`** 中实现面向 CHES Text-to-SQL 的 SD-Zero 流程，并尽量对齐官方仓库：
 
 - 官方参考仓库：`/home/pkuccadm/huwenp/emb/lxy/Self-Distillation-Zero-main`
-- 本地任务仓库：`/home/pkuccadm/huwenp/emb/lxy/ches_sql_sft`
+- 本地任务仓库：`/home/pkuccadm/huwenp/emb/lxy/sd-zero-sql`
 
 核心原则不是“把官方代码整仓搬过来”，也不是“完全重新写一套”，而是：
 
-> **所有 CHES SQL 任务代码继续放在 `ches_sql_sft` 中；方法结构、数据契约、阶段划分尽量与官方 SD-Zero 对齐。**
+> **所有 CHES SQL 任务代码继续放在 `sd-zero-sql` 中；方法结构、数据契约、阶段划分尽量与官方 SD-Zero 对齐。**
 
 ---
 
@@ -88,7 +88,7 @@
 
 ## 3. 官方仓库到当前实现的映射
 
-| 官方 SD-Zero | 作用 | `ches_sql_sft` 对应实现 |
+| 官方 SD-Zero | 作用 | `sd-zero-sql` 对应实现 |
 |---|---|---|
 | `self-revision-training/self_critique_pipeline.py` | 采样 `D_revision` | `scripts/srt/generate_phase1_traces.py` |
 | `self-revision-training/prepare_data.py` | 构造 Stage1 / Stage2 SFT 数据 | `scripts/srt/build_two_stage_data.py` |

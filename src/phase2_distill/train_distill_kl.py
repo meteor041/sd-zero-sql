@@ -10,7 +10,7 @@ import torch.nn.functional as F
 from peft import LoraConfig, PeftModel, get_peft_model
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
-PROJECT_ROOT = Path('/home/pkuccadm/huwenp/emb/lxy/ches_sql_sft')
+PROJECT_ROOT = Path('/home/pkuccadm/huwenp/emb/lxy/sd-zero-sql')
 SRC_ROOT = PROJECT_ROOT / 'src'
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
@@ -19,7 +19,7 @@ from phase2_distill.reward_adapter import compute_sql_reward
 from phase2_distill.dataset_io import DEFAULT_TRAIN_FILE, dataset_to_samples, iter_sample_batches, write_distill_manifest
 from phase2_distill.teacher_conditioning import build_student_prompt, build_teacher_metadata, build_teacher_prefix
 
-DEFAULT_STUDENT_MODEL = '/data/huwenp/emb/lxy/ches_sql_sft/outputs/qwen3_4b_srt_two_stage/stage2'
+DEFAULT_STUDENT_MODEL = '/data/huwenp/emb/lxy/sd-zero-sql/outputs/qwen3_4b_srt_two_stage/stage2'
 DEFAULT_TEACHER_MODEL = DEFAULT_STUDENT_MODEL
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / 'outputs' / 'sql_distill_smoke'
 DEFAULT_DEBUG_FILE = PROJECT_ROOT / 'data' / 'distill' / 'sql_distill_debug_manifest.jsonl'

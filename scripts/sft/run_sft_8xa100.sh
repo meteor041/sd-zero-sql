@@ -2,9 +2,9 @@
 set -euo pipefail
 
 MODEL_PATH="/data/model/Qwen3-4B-Instruct-2507"
-TRAIN_FILE="/home/pkuccadm/huwenp/emb/lxy/ches_sql_sft/data/ches_train_sft_train_4k.jsonl"
-VALID_FILE="/home/pkuccadm/huwenp/emb/lxy/ches_sql_sft/data/ches_train_sft_valid_4k.jsonl"
-OUTPUT_DIR="/data/huwenp/emb/lxy/ches_sql_sft/outputs/qwen3_4b_sft_lora_4k"
+TRAIN_FILE="/home/pkuccadm/huwenp/emb/lxy/sd-zero-sql/data/ches_train_sft_train_4k.jsonl"
+VALID_FILE="/home/pkuccadm/huwenp/emb/lxy/sd-zero-sql/data/ches_train_sft_valid_4k.jsonl"
+OUTPUT_DIR="/data/huwenp/emb/lxy/sd-zero-sql/outputs/qwen3_4b_sft_lora_4k"
 
 export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}
 export TOKENIZERS_PARALLELISM=false
@@ -12,7 +12,7 @@ export NCCL_DEBUG=${NCCL_DEBUG:-WARN}
 export PYTORCH_CUDA_ALLOC_CONF=${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}
 
 mkdir -p "${OUTPUT_DIR}"
-mkdir -p /home/pkuccadm/huwenp/emb/lxy/ches_sql_sft/logs
+mkdir -p /home/pkuccadm/huwenp/emb/lxy/sd-zero-sql/logs
 
 PYTHON_BIN=${PYTHON_BIN:-/home/pkuccadm/anaconda3/bin/python}
 ACCELERATE_BIN=${ACCELERATE_BIN:-${PYTHON_BIN} -m accelerate.commands.launch}
@@ -20,7 +20,7 @@ ACCELERATE_BIN=${ACCELERATE_BIN:-${PYTHON_BIN} -m accelerate.commands.launch}
 ${ACCELERATE_BIN} \
   --num_processes 8 \
   --mixed_precision bf16 \
-  /home/pkuccadm/huwenp/emb/lxy/ches_sql_sft/scripts/sft/train_sft.py \
+  /home/pkuccadm/huwenp/emb/lxy/sd-zero-sql/scripts/sft/train_sft.py \
   --model-path "${MODEL_PATH}" \
   --train-file "${TRAIN_FILE}" \
   --valid-file "${VALID_FILE}" \

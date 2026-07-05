@@ -1,8 +1,8 @@
 student_model: /data/model/Qwen3-4B-Instruct-2507
 teacher_model: /data/model/Qwen3-4B-Instruct-2507
-input_jsonl: /home/pkuccadm/huwenp/emb/lxy/ches_sql_sft/data/ches_train_sft_train_4k.jsonl
-output_dir: /home/pkuccadm/huwenp/emb/lxy/ches_sql_sft/outputs/sql_distill_smoke
-debug_manifest: /home/pkuccadm/huwenp/emb/lxy/ches_sql_sft/data/distill/sql_distill_debug_manifest.jsonl
+input_jsonl: /home/pkuccadm/huwenp/emb/lxy/sd-zero-sql/data/ches_train_sft_train_4k.jsonl
+output_dir: /home/pkuccadm/huwenp/emb/lxy/sd-zero-sql/outputs/sql_distill_smoke
+debug_manifest: /home/pkuccadm/huwenp/emb/lxy/sd-zero-sql/data/distill/sql_distill_debug_manifest.jsonl
 max_samples: 8
 backend: hf
 batch_size: 2

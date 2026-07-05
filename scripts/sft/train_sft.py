@@ -16,17 +16,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--train-file",
         type=str,
-        default="/home/pkuccadm/huwenp/emb/lxy/ches_sql_sft/data/ches_train_sft_train_4k.jsonl",
+        default="/home/pkuccadm/huwenp/emb/lxy/sd-zero-sql/data/ches_train_sft_train_4k.jsonl",
     )
     parser.add_argument(
         "--valid-file",
         type=str,
-        default="/home/pkuccadm/huwenp/emb/lxy/ches_sql_sft/data/ches_train_sft_valid_4k.jsonl",
+        default="/home/pkuccadm/huwenp/emb/lxy/sd-zero-sql/data/ches_train_sft_valid_4k.jsonl",
     )
     parser.add_argument(
         "--output-dir",
         type=str,
-        default="/data/huwenp/emb/lxy/ches_sql_sft/outputs/qwen3_4b_sft_lora_4k",
+        default="/data/huwenp/emb/lxy/sd-zero-sql/outputs/qwen3_4b_sft_lora_4k",
     )
     parser.add_argument("--max-length", type=int, default=4096)
     parser.add_argument("--num-train-epochs", type=int, default=3)

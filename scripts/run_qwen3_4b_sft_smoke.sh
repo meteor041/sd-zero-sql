@@ -1,3 +1,3 @@
 #!/usr/bin/env bash
 set -euo pipefail
-exec bash "/home/pkuccadm/huwenp/emb/lxy/ches_sql_sft/scripts/sft/run_sft_smoke.sh" "$@"
+exec bash "/home/pkuccadm/huwenp/emb/lxy/sd-zero-sql/scripts/sft/run_sft_smoke.sh" "$@"

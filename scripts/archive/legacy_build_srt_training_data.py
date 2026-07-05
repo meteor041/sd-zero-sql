@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 from typing import Dict, List
 
-PROJECT_ROOT = Path('/home/pkuccadm/huwenp/emb/lxy/ches_sql_sft')
+PROJECT_ROOT = Path('/home/pkuccadm/huwenp/emb/lxy/sd-zero-sql')
 DEFAULT_TRACE_JSONL = PROJECT_ROOT / 'data' / 'srt' / 'traces_train_1k_stratified_vllm.jsonl'
 DEFAULT_BASE_TRAIN_JSONL = PROJECT_ROOT / 'data' / 'ches_train_sft_train_4k.jsonl'
 DEFAULT_OUTPUT_JSONL = PROJECT_ROOT / 'data' / 'srt' / 'srt_train_mixed.jsonl'

@@ -2,9 +2,9 @@
 set -euo pipefail
 
 MODEL_PATH="${MODEL_PATH:-/data/model/Qwen3-4B-Instruct-2507}"
-INPUT_JSONL="${INPUT_JSONL:-/home/pkuccadm/huwenp/emb/lxy/ches_sql_sft/data/ches_train_sft_train_4k.jsonl}"
-OUTPUT_JSONL="${OUTPUT_JSONL:-/home/pkuccadm/huwenp/emb/lxy/ches_sql_sft/data/srt/traces_train_shard_vllm.jsonl}"
-SUMMARY_JSON="${SUMMARY_JSON:-/home/pkuccadm/huwenp/emb/lxy/ches_sql_sft/data/srt/traces_train_shard_vllm_summary.json}"
+INPUT_JSONL="${INPUT_JSONL:-/home/pkuccadm/huwenp/emb/lxy/sd-zero-sql/data/ches_train_sft_train_4k.jsonl}"
+OUTPUT_JSONL="${OUTPUT_JSONL:-/home/pkuccadm/huwenp/emb/lxy/sd-zero-sql/data/srt/traces_train_shard_vllm.jsonl}"
+SUMMARY_JSON="${SUMMARY_JSON:-/home/pkuccadm/huwenp/emb/lxy/sd-zero-sql/data/srt/traces_train_shard_vllm_summary.json}"
 
 MAX_SAMPLES="${MAX_SAMPLES:-100}"
 NUM_INITS="${NUM_INITS:-4}"
@@ -25,7 +25,7 @@ export PYTORCH_CUDA_ALLOC_CONF=${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:Tr
 
 PYTHON_BIN=${PYTHON_BIN:-/home/pkuccadm/anaconda3/envs/vllm310/bin/python}
 
-${PYTHON_BIN} /home/pkuccadm/huwenp/emb/lxy/ches_sql_sft/scripts/srt/generate_phase1_traces.py \
+${PYTHON_BIN} /home/pkuccadm/huwenp/emb/lxy/sd-zero-sql/scripts/srt/generate_phase1_traces.py \
   --model-path "${MODEL_PATH}" \
   --input-jsonl "${INPUT_JSONL}" \
   --output-jsonl "${OUTPUT_JSONL}" \

@@ -4,8 +4,8 @@ from typing import Dict, List, Optional, Sequence
 
 from datasets import load_dataset
 
-DEFAULT_TRAIN_FILE = '/home/pkuccadm/huwenp/emb/lxy/ches_sql_sft/data/ches_train_sft_train_4k.jsonl'
-DEFAULT_VALID_FILE = '/home/pkuccadm/huwenp/emb/lxy/ches_sql_sft/data/ches_train_sft_valid_4k.jsonl'
+DEFAULT_TRAIN_FILE = '/home/pkuccadm/huwenp/emb/lxy/sd-zero-sql/data/ches_train_sft_train_4k.jsonl'
+DEFAULT_VALID_FILE = '/home/pkuccadm/huwenp/emb/lxy/sd-zero-sql/data/ches_train_sft_valid_4k.jsonl'
 
 
 def load_prompt_dataset(path: str, max_samples: Optional[int] = None):

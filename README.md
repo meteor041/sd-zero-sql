@@ -1,4 +1,4 @@
-# CHES SQL SFT Workspace
+# SD-Zero SQL Workspace
 
 This workspace contains the data preparation, training, and evaluation integration code for fine-tuning **Qwen3-4B-Instruct** on the CHES Text-to-SQL dataset, plus the aligned **Phase1 SRT** and **Phase2 Distill** pipelines for SQL SD-Zero style training.
 
@@ -7,7 +7,7 @@ This workspace contains the data preparation, training, and evaluation integrati
 - Base model:
   - `/data/model/Qwen3-4B-Instruct-2507`
 - Fine-tuned SFT output directory:
-  - `/data/huwenp/emb/lxy/ches_sql_sft/outputs/qwen3_4b_sft_lora_4k`
+  - `/data/huwenp/emb/lxy/sd-zero-sql/outputs/qwen3_4b_sft_lora_4k`
 
 Training and evaluation scripts are aligned to use the same output locations by default.
 
@@ -158,7 +158,7 @@ Current counts:
 Use the 4k-safe dataset and the 8xA100 launcher:
 
 ```bash
-bash /home/pkuccadm/huwenp/emb/lxy/ches_sql_sft/scripts/sft/run_sft_8xa100.sh
+bash /home/pkuccadm/huwenp/emb/lxy/sd-zero-sql/scripts/sft/run_sft_8xa100.sh
 ```
 
 #### 2. Evaluate

@@ -1,0 +1,23 @@
+student_model: /data/model/Qwen3-4B-Instruct-2507
+teacher_model: /data/model/Qwen3-4B-Instruct-2507
+input_jsonl: /home/pkuccadm/huwenp/emb/lxy/ches_sql_sft/data/ches_train_sft_train_4k.jsonl
+output_dir: /home/pkuccadm/huwenp/emb/lxy/ches_sql_sft/outputs/sql_distill_smoke
+debug_manifest: /home/pkuccadm/huwenp/emb/lxy/ches_sql_sft/data/distill/sql_distill_debug_manifest.jsonl
+max_samples: 8
+backend: hf
+batch_size: 2
+rollout_batch_size: 2
+num_train_epochs: 1
+learning_rate: 1.0e-5
+max_length: 4096
+max_new_tokens: 128
+temperature: 0.0
+tensor_parallel_size: 1
+gpu_memory_utilization: 0.9
+use_4bit: false
+bf16: true
+notes:
+  - Minimal runnable SQL Phase2 configuration.
+  - Teacher is frozen and student is trainable.
+  - Current implementation uses token-level forward KL on the second y span only.
+  - Start with base-model smoke tests before wiring PEFT Phase1 checkpoints.

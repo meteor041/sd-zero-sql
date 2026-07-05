@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+MODEL_PATH="/data/model/Qwen3-4B-Instruct-2507"
+TRAIN_FILE="/home/pkuccadm/huwenp/emb/lxy/ches_sql_sft/data/ches_train_sft_train_4k.jsonl"
+VALID_FILE="/home/pkuccadm/huwenp/emb/lxy/ches_sql_sft/data/ches_train_sft_valid_4k.jsonl"
+OUTPUT_DIR="/home/pkuccadm/huwenp/emb/lxy/ches_sql_sft/outputs/qwen3_4b_sft_smoke"
+
+# 默认只用当前空闲的 3 张卡，避免与他人任务冲突
+export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-5,6,7}
+export TOKENIZERS_PARALLELISM=false
+export NCCL_DEBUG=${NCCL_DEBUG:-WARN}
+export PYTORCH_CUDA_ALLOC_CONF=${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}
+
+mkdir -p "${OUTPUT_DIR}"
+mkdir -p /home/pkuccadm/huwenp/emb/lxy/ches_sql_sft/logs
+
+PYTHON_BIN=${PYTHON_BIN:-/home/pkuccadm/anaconda3/bin/python}
+ACCELERATE_BIN=${ACCELERATE_BIN:-${PYTHON_BIN} -m accelerate.commands.launch}
+
+${ACCELERATE_BIN} \
+  --num_processes 3 \
+  --mixed_precision bf16 \
+  /home/pkuccadm/huwenp/emb/lxy/ches_sql_sft/scripts/sft/train_sft.py \
+  --model-path "${MODEL_PATH}" \
+  --train-file "${TRAIN_FILE}" \
+  --valid-file "${VALID_FILE}" \
+  --output-dir "${OUTPUT_DIR}" \
+  --max-length 4096 \
+  --num-train-epochs 1 \
+  --learning-rate 2e-4 \
+  --weight-decay 0.01 \
+  --warmup-ratio 0.03 \
+  --lr-scheduler-type cosine \
+  --per-device-train-batch-size 1 \
+  --per-device-eval-batch-size 1 \
+  --gradient-accumulation-steps 2 \
+  --logging-steps 1 \
+  --save-steps 20 \
+  --eval-steps 20 \
+  --save-total-limit 2 \
+  --seed 42 \
+  --gradient-checkpointing \
+  --bf16 \
+  --report-to none \
+  --max-train-samples 128 \
+  --max-eval-samples 32

@@ -1,0 +1,14 @@
+# Data and generated artifacts
+data/
+logs/
+outputs/
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Local tooling
+.claude/
+
+# OS/editor
+.DS_Store

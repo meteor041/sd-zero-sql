@@ -1,4 +1,5 @@
 import argparse
+import ctypes
 import json
 import os
 import random
@@ -16,7 +17,7 @@ from sql_core.generation_backend import load_generator
 from sql_core.prompt_builders import build_base_sql_prompt, build_revision_prompt
 from phase1_srt.trace_schema import build_trace_record
 from sql_core.sql_normalizer import normalize_sql_output
-from sql_core.sql_verifier import verify_sql
+from sql_core.sql_verifier import prepare_gold_execution, verify_sql_against_gold
 
 DEFAULT_MODEL_PATH = '/data/model/Qwen3-4B-Instruct-2507'
 DEFAULT_INPUT_JSONL = PROJECT_ROOT / 'data' / 'ches_train_sft_train_4k.jsonl'
@@ -140,10 +141,16 @@ def init_summary_state(args: argparse.Namespace, selected_count: int, shard_coun
         'kept_count': 0,
         'db_trace_counts': defaultdict(int),
         'db_kept_counts': defaultdict(int),
+        'verifier_processed_count': 0,
+        'verifier_total_count': 0,
+        'current_db_id': None,
+        'current_sample_id': None,
+        'current_init_index': None,
+        'last_verifier_error_type': None,
     }
 
 
-def update_summary_state(state: Dict[str, Any], traces: List[Dict[str, Any]], processed_samples: int) -> None:
+def update_summary_state(state: Dict[str, Any], traces: List[Dict[str, Any]], processed_samples: int = 0) -> None:
     state['processed_sample_count'] += processed_samples
     state['total_traces'] += len(traces)
     state['init_correct_count'] += sum(1 for trace in traces if trace['verifier_init'].get('reward', 0) == 1)
@@ -182,6 +189,12 @@ def materialize_summary(state: Dict[str, Any]) -> Dict[str, Any]:
         'kept_ratio': round(state['kept_count'] / total, 4) if total else 0,
         'db_trace_counts': dict(sorted(state['db_trace_counts'].items())),
         'db_kept_counts': dict(sorted(state['db_kept_counts'].items())),
+        'verifier_processed_count': state.get('verifier_processed_count', 0),
+        'verifier_total_count': state.get('verifier_total_count', 0),
+        'current_db_id': state.get('current_db_id'),
+        'current_sample_id': state.get('current_sample_id'),
+        'current_init_index': state.get('current_init_index'),
+        'last_verifier_error_type': state.get('last_verifier_error_type'),
         'error': state.get('error'),
     }
 
@@ -192,7 +205,86 @@ def write_summary(path: Path, state: Dict[str, Any]) -> None:
         json.dump(materialize_summary(state), f, ensure_ascii=False, indent=2)
 
 
-def run_init_stage(samples: List[Dict], generator, batch_size: int, max_new_tokens: int, temperature: float, num_inits: int) -> List[Dict]:
+def set_process_title(title: str) -> None:
+    try:
+        libc = ctypes.CDLL(None)
+        PR_SET_NAME = 15
+        libc.prctl(PR_SET_NAME, title.encode('utf-8')[:15], 0, 0, 0)
+    except Exception:
+        pass
+
+
+def build_stage_output_paths(output_jsonl: Path) -> Dict[str, Path]:
+    stem = output_jsonl.stem
+    parent = output_jsonl.parent
+    return {
+        'init_generated': parent / f'{stem}_init_generated.jsonl',
+        'init_verified': parent / f'{stem}_init_verified.jsonl',
+        'revised_generated': parent / f'{stem}_revised_generated.jsonl',
+        'revised_verified': parent / f'{stem}_revised_verified.jsonl',
+    }
+
+
+def materialize_stage_row(row: Dict[str, Any], *, include_verifier_init: bool = False, include_revised: bool = False) -> Dict[str, Any]:
+    sample = row['sample']
+    record = {
+        'id': sample.get('id'),
+        'db_id': sample.get('db_id'),
+        'base_prompt': row['base_prompt'],
+        'x': row['base_prompt'],
+        'gold_sql': sample.get('gold_sql'),
+        'init_index': row['init_index'],
+        'raw_y_init': row['raw_y_init'],
+        'y_init': row['y_init'],
+    }
+    if include_verifier_init:
+        record['verifier_init'] = row.get('verifier_init')
+    if include_revised:
+        record['revision_prompt'] = row.get('revision_prompt')
+        record['raw_y_revised'] = row.get('raw_y_revised')
+        record['y_revised'] = row.get('y_revised')
+        record['verifier_revised'] = row.get('verifier_revised')
+    return record
+
+
+def write_stage_rows(path: Path, rows: List[Dict[str, Any]], *, include_verifier_init: bool = False, include_revised: bool = False) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, 'w', encoding='utf-8') as handle:
+        append_jsonl_rows(
+            handle,
+            [
+                materialize_stage_row(
+                    row,
+                    include_verifier_init=include_verifier_init,
+                    include_revised=include_revised,
+                )
+                for row in rows
+            ],
+        )
+
+
+def append_stage_row(path: Path, row: Dict[str, Any], *, include_verifier_init: bool = False, include_revised: bool = False) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, 'a', encoding='utf-8') as handle:
+        append_jsonl_rows(
+            handle,
+            [
+                materialize_stage_row(
+                    row,
+                    include_verifier_init=include_verifier_init,
+                    include_revised=include_revised,
+                )
+            ],
+        )
+
+
+def reset_stage_output(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, 'w', encoding='utf-8'):
+        pass
+
+
+def generate_init_candidates(samples: List[Dict], generator, batch_size: int, max_new_tokens: int, temperature: float, num_inits: int) -> List[Dict]:
     prompts = [build_base_sql_prompt(sample) for sample in samples]
     raw_outputs = []
     for start in range(0, len(prompts), batch_size):
@@ -201,50 +293,105 @@ def run_init_stage(samples: List[Dict], generator, batch_size: int, max_new_toke
 
     stage_rows = []
     for sample, prompt, output_start in zip(samples, prompts, range(0, len(raw_outputs), num_inits)):
+        prepared_gold = prepare_gold_execution(sample['db_id'], sample['gold_sql'])
         for init_index, raw_y_init in enumerate(raw_outputs[output_start:output_start + num_inits]):
             y_init = normalize_sql_output(raw_y_init)
-            verifier_init = verify_sql(sample['db_id'], y_init, sample['gold_sql'])
             stage_rows.append(
                 {
                     'sample': sample,
                     'base_prompt': prompt,
+                    'prepared_gold': prepared_gold,
                     'init_index': init_index,
                     'raw_y_init': raw_y_init,
                     'y_init': y_init,
-                    'verifier_init': verifier_init,
                 }
             )
     return stage_rows
 
 
-def run_revision_stage(stage_rows: List[Dict], generator, batch_size: int, max_new_tokens: int, temperature: float) -> List[Dict]:
-    revision_prompts = [build_revision_prompt(row['sample'], row['y_init'], row['verifier_init']) for row in stage_rows]
+def verify_init_candidates(
+    stage_rows: List[Dict[str, Any]],
+    state: Dict[str, Any],
+    summary_path: Path,
+    init_verified_path: Path,
+    progress_every: int = 10,
+) -> None:
+    state['verifier_total_count'] = len(stage_rows)
+    state['verifier_processed_count'] = 0
+    state['last_verifier_error_type'] = None
+    reset_stage_output(init_verified_path)
+    for index, row in enumerate(stage_rows, start=1):
+        verifier_init = verify_sql_against_gold(row['prepared_gold'], row['y_init'])
+        row['verifier_init'] = verifier_init
+        state['verifier_processed_count'] = index
+        state['current_db_id'] = row['sample'].get('db_id')
+        state['current_sample_id'] = row['sample'].get('id')
+        state['current_init_index'] = row['init_index']
+        error_type = verifier_init.get('error_type')
+        if error_type and error_type != 'correct':
+            state['last_verifier_error_type'] = error_type
+        append_stage_row(init_verified_path, row, include_verifier_init=True)
+        if index % progress_every == 0 or index == len(stage_rows):
+            write_summary(summary_path, state)
+
+
+def generate_revised_candidates(stage_rows: List[Dict[str, Any]], generator, batch_size: int, max_new_tokens: int, temperature: float) -> None:
+    revision_prompts = []
+    for row in stage_rows:
+        revision_prompt = build_revision_prompt(row['sample'], row['y_init'], row['verifier_init'])
+        row['revision_prompt'] = revision_prompt
+        revision_prompts.append(revision_prompt)
 
     raw_revision_outputs = []
     for start in range(0, len(revision_prompts), batch_size):
         batch_prompts = revision_prompts[start:start + batch_size]
         raw_revision_outputs.extend(generator.generate_batch(batch_prompts, max_new_tokens, temperature))
 
+    for row, raw_y_revised in zip(stage_rows, raw_revision_outputs):
+        row['raw_y_revised'] = raw_y_revised
+        row['y_revised'] = normalize_sql_output(raw_y_revised)
+
+
+def finalize_traces(
+    stage_rows: List[Dict[str, Any]],
+    state: Dict[str, Any],
+    summary_path: Path,
+    revised_verified_path: Path,
+    progress_every: int = 10,
+) -> List[Dict[str, Any]]:
     traces = []
-    for row, revision_prompt, raw_y_revised in zip(stage_rows, revision_prompts, raw_revision_outputs):
+    state['verifier_total_count'] = len(stage_rows)
+    state['verifier_processed_count'] = 0
+    state['last_verifier_error_type'] = None
+    reset_stage_output(revised_verified_path)
+    for index, row in enumerate(stage_rows, start=1):
+        verifier_revised = verify_sql_against_gold(row['prepared_gold'], row['y_revised'])
+        row['verifier_revised'] = verifier_revised
+        state['verifier_processed_count'] = index
+        state['current_db_id'] = row['sample'].get('db_id')
+        state['current_sample_id'] = row['sample'].get('id')
+        state['current_init_index'] = row['init_index']
+        error_type = verifier_revised.get('error_type')
+        if error_type and error_type != 'correct':
+            state['last_verifier_error_type'] = error_type
+        append_stage_row(revised_verified_path, row, include_verifier_init=True, include_revised=True)
         sample = row['sample']
-        verifier_init = row['verifier_init']
-        y_revised = normalize_sql_output(raw_y_revised)
-        verifier_revised = verify_sql(sample['db_id'], y_revised, sample['gold_sql'])
         trace = build_trace_record(
             sample=sample,
             x=row['base_prompt'],
             y_init=row['y_init'],
-            verifier_init=verifier_init,
-            y_revised=y_revised,
+            verifier_init=row['verifier_init'],
+            y_revised=row['y_revised'],
             verifier_revised=verifier_revised,
             raw_y_init=row['raw_y_init'],
-            raw_y_revised=raw_y_revised,
-            revision_prompt=revision_prompt,
+            raw_y_revised=row['raw_y_revised'],
+            revision_prompt=row['revision_prompt'],
         )
         trace['trace_id'] = f"{sample['id']}__init{row['init_index']}"
         trace['init_index'] = row['init_index']
         traces.append(trace)
+        if index % progress_every == 0 or index == len(stage_rows):
+            write_summary(summary_path, state)
     return traces
 
 
@@ -264,58 +411,122 @@ def main() -> None:
 
     args.output_jsonl.parent.mkdir(parents=True, exist_ok=True)
     args.summary_json.parent.mkdir(parents=True, exist_ok=True)
+    stage_output_paths = build_stage_output_paths(args.output_jsonl)
 
     state = init_summary_state(args, selected_count=len(selected_samples), shard_count=len(samples))
 
-    total_chunks = (len(samples) + args.sample_chunk_size - 1) // args.sample_chunk_size if samples else 0
     print(
         f'Using backend={args.backend} batch_size={args.batch_size} sample_chunk_size={args.sample_chunk_size} '
         f'samples={len(samples)} num_inits={args.num_inits} shard={args.shard_index}/{args.num_shards}'
     )
 
     try:
+        state['status'] = 'generating_init'
+        set_process_title('p1-gen-init')
+        write_summary(args.summary_json, state)
+        stage_rows = generate_init_candidates(
+            samples,
+            generator,
+            args.batch_size,
+            args.max_new_tokens,
+            args.temperature,
+            args.num_inits,
+        )
+        write_stage_rows(stage_output_paths['init_generated'], stage_rows)
+        state['processed_sample_count'] = len(samples)
+        write_summary(args.summary_json, state)
+        print(
+            json.dumps(
+                {
+                    'status': state['status'],
+                    'sample_count': len(samples),
+                    'init_candidate_count': len(stage_rows),
+                    'init_generated_path': str(stage_output_paths['init_generated']),
+                },
+                ensure_ascii=False,
+            )
+        )
+
+        state['status'] = 'verifying_init'
+        set_process_title('p1-verify-init')
+        state['verifier_processed_count'] = 0
+        state['verifier_total_count'] = len(stage_rows)
+        state['current_db_id'] = None
+        state['current_sample_id'] = None
+        state['current_init_index'] = None
+        state['last_verifier_error_type'] = None
+        write_summary(args.summary_json, state)
+        verify_init_candidates(
+            stage_rows,
+            state=state,
+            summary_path=args.summary_json,
+            init_verified_path=stage_output_paths['init_verified'],
+        )
+        write_summary(args.summary_json, state)
+        print(
+            json.dumps(
+                {
+                    'status': state['status'],
+                    'verified_init_count': len(stage_rows),
+                    'init_verified_path': str(stage_output_paths['init_verified']),
+                },
+                ensure_ascii=False,
+            )
+        )
+
+        state['status'] = 'generating_revised'
+        set_process_title('p1-gen-rev')
+        write_summary(args.summary_json, state)
+        generate_revised_candidates(
+            stage_rows,
+            generator,
+            args.batch_size,
+            args.max_new_tokens,
+            args.temperature,
+        )
+        write_stage_rows(stage_output_paths['revised_generated'], stage_rows, include_verifier_init=True, include_revised=True)
+        write_summary(args.summary_json, state)
+        print(
+            json.dumps(
+                {
+                    'status': state['status'],
+                    'revised_candidate_count': len(stage_rows),
+                    'revised_generated_path': str(stage_output_paths['revised_generated']),
+                },
+                ensure_ascii=False,
+            )
+        )
+
+        state['status'] = 'verifying_revised'
+        set_process_title('p1-verify-rev')
+        state['verifier_processed_count'] = 0
+        state['verifier_total_count'] = len(stage_rows)
+        state['current_db_id'] = None
+        state['current_sample_id'] = None
+        state['current_init_index'] = None
+        state['last_verifier_error_type'] = None
+        write_summary(args.summary_json, state)
+        traces = finalize_traces(
+            stage_rows,
+            state=state,
+            summary_path=args.summary_json,
+            revised_verified_path=stage_output_paths['revised_verified'],
+        )
+
         with open(args.output_jsonl, 'w', encoding='utf-8') as output_handle:
-            for chunk_idx, start in enumerate(range(0, len(samples), args.sample_chunk_size), start=1):
-                sample_chunk = samples[start:start + args.sample_chunk_size]
-                stage_rows = run_init_stage(
-                    sample_chunk,
-                    generator,
-                    args.batch_size,
-                    args.max_new_tokens,
-                    args.temperature,
-                    args.num_inits,
-                )
-                traces = run_revision_stage(
-                    stage_rows,
-                    generator,
-                    args.batch_size,
-                    args.max_new_tokens,
-                    args.temperature,
-                )
-                append_jsonl_rows(output_handle, traces)
-                update_summary_state(state, traces, processed_samples=len(sample_chunk))
-                write_summary(args.summary_json, state)
-                print(
-                    json.dumps(
-                        {
-                            'chunk': chunk_idx,
-                            'total_chunks': total_chunks,
-                            'processed_sample_count': state['processed_sample_count'],
-                            'sample_count': state['sample_count'],
-                            'total_traces': state['total_traces'],
-                            'kept_count': state['kept_count'],
-                        },
-                        ensure_ascii=False,
-                    )
-                )
+            append_jsonl_rows(output_handle, traces)
+
+        print(json.dumps({'status': state['status'], 'final_trace_path': str(args.output_jsonl), 'trace_count': len(traces)}, ensure_ascii=False))
+        update_summary_state(state, traces)
+        state['status'] = 'completed'
+        set_process_title('p1-complete')
+        write_summary(args.summary_json, state)
     except Exception as exc:
         state['status'] = 'failed'
+        set_process_title('p1-failed')
         state['error'] = f'{type(exc).__name__}: {exc}'
         write_summary(args.summary_json, state)
         raise
-
-    state['status'] = 'completed'
-    write_summary(args.summary_json, state)
 
     print(json.dumps(materialize_summary(state), ensure_ascii=False, indent=2))
     print(f'Trace output: {args.output_jsonl}')

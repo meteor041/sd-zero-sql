@@ -5,6 +5,7 @@ import os
 import random
 import sys
 from collections import defaultdict
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -46,6 +47,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--batch-size', type=int, default=8)
     parser.add_argument('--tensor-parallel-size', type=int, default=1)
     parser.add_argument('--gpu-memory-utilization', type=float, default=0.9)
+    parser.add_argument('--verifier-workers', type=int, default=8)
     return parser.parse_args()
 
 
@@ -135,6 +137,7 @@ def init_summary_state(args: argparse.Namespace, selected_count: int, shard_coun
         'batch_size': args.batch_size,
         'temperature': args.temperature,
         'max_new_tokens': args.max_new_tokens,
+        'verifier_workers': args.verifier_workers,
         'total_traces': 0,
         'init_correct_count': 0,
         'revised_correct_count': 0,
@@ -180,6 +183,7 @@ def materialize_summary(state: Dict[str, Any]) -> Dict[str, Any]:
         'batch_size': state['batch_size'],
         'temperature': state['temperature'],
         'max_new_tokens': state['max_new_tokens'],
+        'verifier_workers': state.get('verifier_workers'),
         'total_traces': total,
         'init_correct_count': state['init_correct_count'],
         'init_correct_ratio': round(state['init_correct_count'] / total, 4) if total else 0,
@@ -315,24 +319,64 @@ def verify_init_candidates(
     summary_path: Path,
     init_verified_path: Path,
     progress_every: int = 10,
+    verifier_workers: int = 8,
+) -> None:
+    verify_stage_rows_parallel(
+        stage_rows,
+        sql_key='y_init',
+        verifier_key='verifier_init',
+        state=state,
+        summary_path=summary_path,
+        stage_output_path=init_verified_path,
+        include_revised=False,
+        progress_every=progress_every,
+        verifier_workers=verifier_workers,
+    )
+
+
+def verify_stage_row(args: tuple[str, str, str]) -> Dict[str, Any]:
+    db_id, predicted_sql, gold_sql = args
+    return verify_sql(db_id, predicted_sql, gold_sql)
+
+
+def verify_stage_rows_parallel(
+    stage_rows: List[Dict[str, Any]],
+    *,
+    sql_key: str,
+    verifier_key: str,
+    state: Dict[str, Any],
+    summary_path: Path,
+    stage_output_path: Path,
+    include_revised: bool,
+    progress_every: int,
+    verifier_workers: int,
 ) -> None:
     state['verifier_total_count'] = len(stage_rows)
     state['verifier_processed_count'] = 0
     state['last_verifier_error_type'] = None
-    reset_stage_output(init_verified_path)
-    for index, row in enumerate(stage_rows, start=1):
-        verifier_init = verify_sql_against_gold(row['prepared_gold'], row['y_init'])
-        row['verifier_init'] = verifier_init
-        state['verifier_processed_count'] = index
-        state['current_db_id'] = row['sample'].get('db_id')
-        state['current_sample_id'] = row['sample'].get('id')
-        state['current_init_index'] = row['init_index']
-        error_type = verifier_init.get('error_type')
-        if error_type and error_type != 'correct':
-            state['last_verifier_error_type'] = error_type
-        append_stage_row(init_verified_path, row, include_verifier_init=True)
-        if index % progress_every == 0 or index == len(stage_rows):
-            write_summary(summary_path, state)
+    reset_stage_output(stage_output_path)
+    verify_args = [
+        (row['sample']['db_id'], row[sql_key], row['sample']['gold_sql'])
+        for row in stage_rows
+    ]
+    with ProcessPoolExecutor(max_workers=verifier_workers) as executor:
+        for index, (row, verifier_result) in enumerate(zip(stage_rows, executor.map(verify_stage_row, verify_args)), start=1):
+            row[verifier_key] = verifier_result
+            state['verifier_processed_count'] = index
+            state['current_db_id'] = row['sample'].get('db_id')
+            state['current_sample_id'] = row['sample'].get('id')
+            state['current_init_index'] = row['init_index']
+            error_type = verifier_result.get('error_type')
+            if error_type and error_type != 'correct':
+                state['last_verifier_error_type'] = error_type
+            append_stage_row(
+                stage_output_path,
+                row,
+                include_verifier_init=True,
+                include_revised=include_revised,
+            )
+            if index % progress_every == 0 or index == len(stage_rows):
+                write_summary(summary_path, state)
 
 
 def generate_revised_candidates(stage_rows: List[Dict[str, Any]], generator, batch_size: int, max_new_tokens: int, temperature: float) -> None:
@@ -358,23 +402,21 @@ def finalize_traces(
     summary_path: Path,
     revised_verified_path: Path,
     progress_every: int = 10,
+    verifier_workers: int = 8,
 ) -> List[Dict[str, Any]]:
+    verify_stage_rows_parallel(
+        stage_rows,
+        sql_key='y_revised',
+        verifier_key='verifier_revised',
+        state=state,
+        summary_path=summary_path,
+        stage_output_path=revised_verified_path,
+        include_revised=True,
+        progress_every=progress_every,
+        verifier_workers=verifier_workers,
+    )
     traces = []
-    state['verifier_total_count'] = len(stage_rows)
-    state['verifier_processed_count'] = 0
-    state['last_verifier_error_type'] = None
-    reset_stage_output(revised_verified_path)
-    for index, row in enumerate(stage_rows, start=1):
-        verifier_revised = verify_sql_against_gold(row['prepared_gold'], row['y_revised'])
-        row['verifier_revised'] = verifier_revised
-        state['verifier_processed_count'] = index
-        state['current_db_id'] = row['sample'].get('db_id')
-        state['current_sample_id'] = row['sample'].get('id')
-        state['current_init_index'] = row['init_index']
-        error_type = verifier_revised.get('error_type')
-        if error_type and error_type != 'correct':
-            state['last_verifier_error_type'] = error_type
-        append_stage_row(revised_verified_path, row, include_verifier_init=True, include_revised=True)
+    for row in stage_rows:
         sample = row['sample']
         trace = build_trace_record(
             sample=sample,
@@ -382,7 +424,7 @@ def finalize_traces(
             y_init=row['y_init'],
             verifier_init=row['verifier_init'],
             y_revised=row['y_revised'],
-            verifier_revised=verifier_revised,
+            verifier_revised=row['verifier_revised'],
             raw_y_init=row['raw_y_init'],
             raw_y_revised=row['raw_y_revised'],
             revision_prompt=row['revision_prompt'],
@@ -390,8 +432,6 @@ def finalize_traces(
         trace['trace_id'] = f"{sample['id']}__init{row['init_index']}"
         trace['init_index'] = row['init_index']
         traces.append(trace)
-        if index % progress_every == 0 or index == len(stage_rows):
-            write_summary(summary_path, state)
     return traces
 
 
@@ -461,6 +501,7 @@ def main() -> None:
             state=state,
             summary_path=args.summary_json,
             init_verified_path=stage_output_paths['init_verified'],
+            verifier_workers=args.verifier_workers,
         )
         write_summary(args.summary_json, state)
         print(
@@ -511,6 +552,7 @@ def main() -> None:
             state=state,
             summary_path=args.summary_json,
             revised_verified_path=stage_output_paths['revised_verified'],
+            verifier_workers=args.verifier_workers,
         )
 
         with open(args.output_jsonl, 'w', encoding='utf-8') as output_handle:

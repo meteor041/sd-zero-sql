@@ -1,13 +1,17 @@
 import argparse
 import json
+import math
 import os
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import torch
+import torch.distributed as dist
 import torch.nn.functional as F
+from accelerate import Accelerator
 from peft import LoraConfig, PeftModel, get_peft_model
+from torch.utils.data import DataLoader
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
 PROJECT_ROOT = Path('/home/pkuccadm/huwenp/emb/lxy/sd-zero-sql')
@@ -16,22 +20,38 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from phase2_distill.reward_adapter import compute_sql_reward
-from phase2_distill.dataset_io import DEFAULT_TRAIN_FILE, dataset_to_samples, iter_sample_batches, write_distill_manifest
+from phase2_distill.dataset_io import DEFAULT_TRAIN_FILE, DEFAULT_VALID_FILE, dataset_to_samples, iter_sample_batches, write_distill_manifest
 from phase2_distill.teacher_conditioning import build_student_prompt, build_teacher_metadata, build_teacher_prefix
+from sql_core.sql_normalizer import normalize_sql_output
 
-DEFAULT_STUDENT_MODEL = '/data/huwenp/emb/lxy/sd-zero-sql/outputs/qwen3_4b_srt_two_stage/stage2'
-DEFAULT_TEACHER_MODEL = DEFAULT_STUDENT_MODEL
-DEFAULT_OUTPUT_DIR = PROJECT_ROOT / 'outputs' / 'sql_distill_smoke'
-DEFAULT_DEBUG_FILE = PROJECT_ROOT / 'data' / 'distill' / 'sql_distill_debug_manifest.jsonl'
+DEFAULT_PHASE1_STAGE2_MODEL = str(PROJECT_ROOT / 'outputs' / 'qwen3_4b_phase1_1k_tp4_full' / 'stage2')
+DEFAULT_STUDENT_MODEL = DEFAULT_PHASE1_STAGE2_MODEL
+DEFAULT_TEACHER_MODEL = DEFAULT_PHASE1_STAGE2_MODEL
+DEFAULT_OUTPUT_DIR = PROJECT_ROOT / 'outputs' / 'sql_distill_phase2_4gpu'
+DEFAULT_DEBUG_FILE = PROJECT_ROOT / 'data' / 'distill' / 'sql_distill_phase2_4gpu_debug_manifest.jsonl'
+DEFAULT_CHECKPOINT_DIR = PROJECT_ROOT / 'outputs' / 'sql_distill_phase2_4gpu_checkpoints'
+
+
+class ListDataset(torch.utils.data.Dataset):
+    def __init__(self, rows: List[Dict]):
+        self.rows = rows
+
+    def __len__(self) -> int:
+        return len(self.rows)
+
+    def __getitem__(self, index: int) -> Dict:
+        return self.rows[index]
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description='Train a minimal SQL Phase2 distillation loop.')
+    parser = argparse.ArgumentParser(description='Train a distributed SQL Phase2 distillation loop.')
     parser.add_argument('--student-model', type=str, default=DEFAULT_STUDENT_MODEL)
     parser.add_argument('--teacher-model', type=str, default=DEFAULT_TEACHER_MODEL)
     parser.add_argument('--input-jsonl', type=str, default=DEFAULT_TRAIN_FILE)
+    parser.add_argument('--valid-jsonl', type=str, default=DEFAULT_VALID_FILE)
     parser.add_argument('--output-dir', type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument('--debug-manifest', type=Path, default=DEFAULT_DEBUG_FILE)
+    parser.add_argument('--checkpoint-dir', type=Path, default=DEFAULT_CHECKPOINT_DIR)
     parser.add_argument('--max-samples', type=int, default=16)
     parser.add_argument('--max-new-tokens', type=int, default=256)
     parser.add_argument('--temperature', type=float, default=0.0)
@@ -41,6 +61,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--num-train-epochs', type=int, default=1)
     parser.add_argument('--learning-rate', type=float, default=1e-5)
     parser.add_argument('--weight-decay', type=float, default=0.0)
+    parser.add_argument('--eval-batch-size', type=int, default=4)
+    parser.add_argument('--eval-max-samples', type=int, default=16)
+    parser.add_argument('--eval-every-steps', type=int, default=0)
+    parser.add_argument('--save-every-steps', type=int, default=0)
+    parser.add_argument('--resume-from-checkpoint', type=Path, default=None)
     parser.add_argument('--max-length', type=int, default=4096)
     parser.add_argument('--lora-r', type=int, default=16)
     parser.add_argument('--lora-alpha', type=int, default=32)
@@ -70,11 +95,11 @@ def load_tokenizer(model_path: str):
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
         tokenizer.pad_token_id = tokenizer.eos_token_id
-    tokenizer.padding_side = 'right'
+    tokenizer.padding_side = 'left'
     return tokenizer
 
 
-def _load_base_model(model_path: str, use_4bit: bool, use_bf16: bool, *, device_map=None):
+def _load_base_model(model_path: str, use_4bit: bool, use_bf16: bool):
     quant_config = build_quant_config(use_4bit)
     torch_dtype = torch.bfloat16 if use_bf16 or use_4bit else torch.float16
     model = AutoModelForCausalLM.from_pretrained(
@@ -82,7 +107,6 @@ def _load_base_model(model_path: str, use_4bit: bool, use_bf16: bool, *, device_
         quantization_config=quant_config,
         torch_dtype=torch_dtype,
         trust_remote_code=True,
-        device_map=device_map,
     )
     model.config.use_cache = False
     return model
@@ -119,10 +143,10 @@ def load_student_model(args: argparse.Namespace):
 def load_teacher_model(args: argparse.Namespace):
     if _is_peft_checkpoint(args.teacher_model):
         base_model_name = json.loads(Path(args.teacher_model, 'adapter_config.json').read_text(encoding='utf-8')).get('base_model_name_or_path')
-        base_model = _load_base_model(base_model_name, False, args.bf16, device_map='auto')
+        base_model = _load_base_model(base_model_name, False, args.bf16)
         model = PeftModel.from_pretrained(base_model, args.teacher_model, is_trainable=False)
     else:
-        model = _load_base_model(args.teacher_model, False, args.bf16, device_map='auto')
+        model = _load_base_model(args.teacher_model, False, args.bf16)
     model.eval()
     model.config.use_cache = False
     for param in model.parameters():
@@ -130,14 +154,14 @@ def load_teacher_model(args: argparse.Namespace):
     return model
 
 
-def build_sequences(sample: Dict, student_response_sql: str, reward: int, verifier_result: Dict) -> Dict[str, str]:
+def build_sequences(sample: Dict, student_response_sql: str, teacher_revised_sql: str, reward: int, verifier_result: Dict) -> Dict[str, str]:
     student_prompt = build_student_prompt(sample)
     teacher_prefix = build_teacher_prefix(sample, student_response_sql, reward, verifier_result)
     return {
         'student_prompt': student_prompt,
-        'student_target': student_response_sql,
+        'student_target': teacher_revised_sql,
         'teacher_prompt': teacher_prefix,
-        'teacher_target': student_response_sql,
+        'teacher_target': teacher_revised_sql,
     }
 
 
@@ -235,35 +259,59 @@ def collate_distill_batch(tokenizer, rows: List[Dict], max_length: int) -> Tuple
     return batch, rows
 
 
-def run_rollout(samples: List[Dict], model, tokenizer, batch_size: int, max_new_tokens: int, temperature: float) -> List[str]:
+def run_rollout(samples: List[Dict], model, tokenizer, max_new_tokens: int, temperature: float, accelerator: Accelerator) -> List[str]:
     model.eval()
+    generation_model = accelerator.unwrap_model(model)
     prompts = [build_student_prompt(sample) for sample in samples]
-    outputs = []
-    device = next(model.parameters()).device
-    for start in range(0, len(prompts), batch_size):
-        batch_prompts = prompts[start:start + batch_size]
-        tokenized = tokenizer(batch_prompts, return_tensors='pt', padding=True)
-        input_ids = tokenized.input_ids.to(device)
-        attention_mask = tokenized.attention_mask.to(device)
-        generation_kwargs = {
-            'max_new_tokens': max_new_tokens,
-            'pad_token_id': tokenizer.pad_token_id,
-            'eos_token_id': tokenizer.eos_token_id,
-        }
-        if temperature > 0:
-            generation_kwargs.update({'do_sample': True, 'temperature': temperature})
-        else:
-            generation_kwargs.update({'do_sample': False})
-        with torch.no_grad():
-            generated = model.generate(input_ids=input_ids, attention_mask=attention_mask, **generation_kwargs)
-        input_len = input_ids.shape[1]
-        for sequence in generated:
-            outputs.append(tokenizer.decode(sequence[input_len:], skip_special_tokens=True).strip())
+    tokenized = tokenizer(prompts, return_tensors='pt', padding=True)
+    input_ids = tokenized.input_ids.to(accelerator.device)
+    attention_mask = tokenized.attention_mask.to(accelerator.device)
+    generation_kwargs = {
+        'max_new_tokens': max_new_tokens,
+        'pad_token_id': tokenizer.pad_token_id,
+        'eos_token_id': tokenizer.eos_token_id,
+    }
+    if temperature > 0:
+        generation_kwargs.update({'do_sample': True, 'temperature': temperature})
+    else:
+        generation_kwargs.update({'do_sample': False})
+    with torch.no_grad():
+        generated = generation_model.generate(input_ids=input_ids, attention_mask=attention_mask, **generation_kwargs)
+    input_len = input_ids.shape[1]
+    outputs = [tokenizer.decode(sequence[input_len:], skip_special_tokens=True).strip() for sequence in generated]
     model.train()
     return outputs
 
 
-def build_batch_rows(samples: List[Dict], student_outputs: List[str]) -> List[Dict]:
+def build_teacher_targets(
+    rows: List[Dict],
+    teacher_model,
+    tokenizer,
+    max_new_tokens: int,
+    accelerator: Accelerator,
+) -> None:
+    teacher_model.eval()
+    prompts = [row['teacher_prompt'] for row in rows]
+    tokenized = tokenizer(prompts, return_tensors='pt', padding=True)
+    input_ids = tokenized.input_ids.to(accelerator.device)
+    attention_mask = tokenized.attention_mask.to(accelerator.device)
+    with torch.no_grad():
+        generated = teacher_model.generate(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            max_new_tokens=max_new_tokens,
+            do_sample=False,
+            pad_token_id=tokenizer.pad_token_id,
+            eos_token_id=tokenizer.eos_token_id,
+        )
+    input_len = input_ids.shape[1]
+    outputs = [tokenizer.decode(sequence[input_len:], skip_special_tokens=True).strip() for sequence in generated]
+    for row, teacher_output in zip(rows, outputs):
+        row['teacher_response_raw'] = teacher_output
+        row['teacher_revised_sql'] = normalize_sql_output(teacher_output)
+
+
+def build_batch_rows(samples: List[Dict], student_outputs: List[str], teacher_model, tokenizer, max_new_tokens: int, accelerator: Accelerator, rank: int) -> List[Dict]:
     rows = []
     for sample, student_response in zip(samples, student_outputs):
         reward_info = compute_sql_reward(sample, student_response)
@@ -273,14 +321,9 @@ def build_batch_rows(samples: List[Dict], student_outputs: List[str]) -> List[Di
             reward_info['reward'],
             reward_info['verifier_result'],
         )
-        sequences = build_sequences(
-            sample,
-            reward_info['normalized_sql'],
-            reward_info['reward'],
-            reward_info['verifier_result'],
-        )
         rows.append(
             {
+                'rank': rank,
                 'id': sample.get('id'),
                 'db_id': sample.get('db_id'),
                 'question': sample.get('question'),
@@ -291,13 +334,30 @@ def build_batch_rows(samples: List[Dict], student_outputs: List[str]) -> List[Di
                 'verifier_result': reward_info['verifier_result'],
                 'p_r': teacher_meta['p_r'],
                 'feedback_block': teacher_meta['feedback_block'],
+                'teacher_prompt': teacher_meta['teacher_prompt'],
+            }
+        )
+
+    build_teacher_targets(rows, teacher_model, tokenizer, max_new_tokens, accelerator)
+
+    final_rows = []
+    for sample, row in zip(samples, rows):
+        sequences = build_sequences(
+            sample,
+            row['student_response_sql'],
+            row['teacher_revised_sql'],
+            row['reward'],
+            row['verifier_result'],
+        )
+        row.update(
+            {
                 'student_prompt': sequences['student_prompt'],
                 'student_target': sequences['student_target'],
-                'teacher_prompt': sequences['teacher_prompt'],
                 'teacher_target': sequences['teacher_target'],
             }
         )
-    return rows
+        final_rows.append(row)
+    return final_rows
 
 
 def compute_forward_kl(student_logits: torch.Tensor, teacher_logits: torch.Tensor, target_mask: torch.Tensor) -> torch.Tensor:
@@ -317,63 +377,234 @@ def save_train_metrics(output_dir: Path, metrics: Dict) -> None:
         json.dump(metrics, f, ensure_ascii=False, indent=2)
 
 
-def main() -> None:
-    args = parse_args()
-    args.output_dir.mkdir(parents=True, exist_ok=True)
-    if args.save_debug_manifest:
-        args.debug_manifest.parent.mkdir(parents=True, exist_ok=True)
+def save_checkpoint(
+    checkpoint_dir: Path,
+    step: int,
+    accelerator: Accelerator,
+    student_model,
+    optimizer,
+    metrics: Dict,
+) -> None:
+    checkpoint_path = checkpoint_dir / f'checkpoint-{step}'
+    checkpoint_path.mkdir(parents=True, exist_ok=True)
+    student_to_save = accelerator.unwrap_model(student_model)
+    student_to_save.save_pretrained(checkpoint_path)
+    torch.save(optimizer.state_dict(), checkpoint_path / 'optimizer.pt')
+    with open(checkpoint_path / 'trainer_state.json', 'w', encoding='utf-8') as f:
+        json.dump(metrics, f, ensure_ascii=False, indent=2)
 
-    samples = dataset_to_samples(args.input_jsonl, args.max_samples)
-    tokenizer = load_tokenizer(args.student_model)
-    student_model = load_student_model(args)
-    teacher_model = load_teacher_model(args)
-    student_model.train()
 
-    optimizer = torch.optim.AdamW(student_model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
-    metrics = {
-        'count': len(samples),
-        'student_model': args.student_model,
-        'teacher_model': args.teacher_model,
-        'reward_1_count': 0,
-        'reward_0_count': 0,
-        'alignment_skip_count': 0,
-        'aligned_count': 0,
-        'train_steps': 0,
-        'loss_history': [],
-    }
-    debug_rows = []
+def load_checkpoint(resume_from: Path, student_model, optimizer) -> Tuple[int, Dict]:
+    optimizer_path = resume_from / 'optimizer.pt'
+    trainer_state_path = resume_from / 'trainer_state.json'
+    if optimizer_path.exists():
+        optimizer.load_state_dict(torch.load(optimizer_path, map_location='cpu'))
+    if trainer_state_path.exists():
+        state = json.loads(trainer_state_path.read_text(encoding='utf-8'))
+    else:
+        state = {}
+    step = int(state.get('train_steps', 0))
+    return step, state
 
-    student_device = next(student_model.parameters()).device
-    teacher_device = next(teacher_model.parameters()).device
 
-    for _ in range(args.num_train_epochs):
-        for sample_batch in iter_sample_batches(samples, args.rollout_batch_size):
+def reduce_count(accelerator: Accelerator, value: int) -> int:
+    tensor = torch.tensor(value, device=accelerator.device, dtype=torch.long)
+    reduced = accelerator.reduce(tensor, reduction='sum')
+    return int(reduced.item())
+
+
+def gather_debug_rows(debug_rows: List[Dict]) -> List[Dict]:
+    if not dist.is_available() or not dist.is_initialized():
+        return debug_rows
+    gathered: List[List[Dict]] = [None for _ in range(dist.get_world_size())]
+    dist.all_gather_object(gathered, debug_rows)
+    merged: List[Dict] = []
+    for rows in gathered:
+        merged.extend(rows or [])
+    return merged
+
+
+def build_rollout_dataloader(samples: List[Dict], batch_size: int) -> DataLoader:
+    return DataLoader(ListDataset(samples), batch_size=batch_size, shuffle=False, collate_fn=lambda rows: list(rows))
+
+
+def evaluate_phase2(
+    samples: List[Dict],
+    student_model,
+    teacher_model,
+    tokenizer,
+    args: argparse.Namespace,
+    accelerator: Accelerator,
+) -> Dict[str, Any]:
+    if not samples:
+        return {
+            'eval_count': 0,
+            'eval_reward_1_count': 0,
+            'eval_reward_0_count': 0,
+            'eval_aligned_count': 0,
+            'eval_alignment_skip_count': 0,
+            'eval_mean_loss': None,
+        }
+
+    reward_1_local = 0
+    reward_0_local = 0
+    aligned_local = 0
+    skipped_local = 0
+    losses: List[float] = []
+    eval_dataloader = build_rollout_dataloader(samples, args.eval_batch_size)
+
+    student_model.eval()
+    teacher_model.eval()
+    with torch.no_grad():
+        for sample_batch in eval_dataloader:
             student_outputs = run_rollout(
                 sample_batch,
                 student_model,
                 tokenizer,
-                args.rollout_batch_size,
                 args.max_new_tokens,
                 args.temperature,
+                accelerator,
             )
-            batch_rows = build_batch_rows(sample_batch, student_outputs)
-            metrics['reward_1_count'] += sum(1 for row in batch_rows if row['reward'] == 1)
-            metrics['reward_0_count'] += sum(1 for row in batch_rows if row['reward'] == 0)
+            batch_rows = build_batch_rows(
+                sample_batch,
+                student_outputs,
+                teacher_model,
+                tokenizer,
+                args.max_new_tokens,
+                accelerator,
+                accelerator.process_index,
+            )
+            reward_1_local += sum(1 for row in batch_rows if row['reward'] == 1)
+            reward_0_local += sum(1 for row in batch_rows if row['reward'] == 0)
+            for eval_rows in iter_sample_batches(batch_rows, args.batch_size):
+                collated, traced_rows = collate_distill_batch(tokenizer, eval_rows, args.max_length)
+                skipped_local += sum(1 for row in traced_rows if not row.get('aligned', False))
+                aligned_local += sum(1 for row in traced_rows if row.get('aligned', False))
+                if collated is None:
+                    continue
+
+                student_input_ids = collated['student_input_ids'].to(accelerator.device)
+                student_attention_mask = collated['student_attention_mask'].to(accelerator.device)
+                student_target_mask = collated['student_target_mask'].to(accelerator.device)
+                teacher_input_ids = collated['teacher_input_ids'].to(accelerator.device)
+                teacher_attention_mask = collated['teacher_attention_mask'].to(accelerator.device)
+                teacher_target_mask = collated['teacher_target_mask'].to(accelerator.device)
+
+                student_outputs_obj = student_model(input_ids=student_input_ids, attention_mask=student_attention_mask)
+                teacher_outputs_obj = teacher_model(input_ids=teacher_input_ids, attention_mask=teacher_attention_mask)
+
+                student_logits = student_outputs_obj.logits[..., :-1, :]
+                teacher_logits = teacher_outputs_obj.logits[..., :-1, :]
+                student_target_mask = student_target_mask[..., 1:]
+                teacher_target_mask = teacher_target_mask[..., 1:]
+
+                student_target_logits = student_logits[student_target_mask].view(-1, student_logits.shape[-1])
+                teacher_target_logits = teacher_logits[teacher_target_mask].view(-1, teacher_logits.shape[-1])
+                if student_target_logits.shape[0] != teacher_target_logits.shape[0]:
+                    skipped_local += 1
+                    continue
+
+                loss = compute_forward_kl(
+                    student_target_logits.unsqueeze(0),
+                    teacher_target_logits.unsqueeze(0).to(student_target_logits.device),
+                    torch.ones((1, student_target_logits.shape[0]), dtype=torch.bool, device=student_target_logits.device),
+                )
+                gathered_loss = accelerator.gather(loss.detach().reshape(1))
+                if accelerator.is_main_process:
+                    losses.append(float(gathered_loss.mean().cpu().item()))
+    student_model.train()
+
+    metrics = {
+        'eval_count': len(samples),
+        'eval_reward_1_count': reduce_count(accelerator, reward_1_local),
+        'eval_reward_0_count': reduce_count(accelerator, reward_0_local),
+        'eval_aligned_count': reduce_count(accelerator, aligned_local),
+        'eval_alignment_skip_count': reduce_count(accelerator, skipped_local),
+        'eval_mean_loss': round(sum(losses) / len(losses), 6) if accelerator.is_main_process and losses else None,
+    }
+    return metrics
+
+
+def main() -> None:
+    args = parse_args()
+    local_rank = int(os.environ.get('LOCAL_RANK', '0')) if 'os' in globals() else 0
+    if torch.cuda.is_available():
+        torch.cuda.set_device(local_rank)
+    accelerator = Accelerator()
+
+    if accelerator.is_main_process:
+        args.output_dir.mkdir(parents=True, exist_ok=True)
+        if args.save_debug_manifest:
+            args.debug_manifest.parent.mkdir(parents=True, exist_ok=True)
+    accelerator.wait_for_everyone()
+
+    samples = dataset_to_samples(args.input_jsonl, args.max_samples)
+    valid_samples = dataset_to_samples(args.valid_jsonl, args.eval_max_samples) if args.valid_jsonl else []
+    tokenizer = load_tokenizer(args.student_model)
+    student_model = load_student_model(args)
+    teacher_model = load_teacher_model(args)
+    optimizer = torch.optim.AdamW(student_model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
+    rollout_dataloader = build_rollout_dataloader(samples, args.rollout_batch_size)
+
+    student_model, optimizer, rollout_dataloader = accelerator.prepare(student_model, optimizer, rollout_dataloader)
+    teacher_model.to(accelerator.device)
+    teacher_model.eval()
+    for param in teacher_model.parameters():
+        param.requires_grad_(False)
+    student_model.train()
+
+    reward_1_count_local = 0
+    reward_0_count_local = 0
+    alignment_skip_count_local = 0
+    aligned_count_local = 0
+    train_steps_local = 0
+    loss_history: List[float] = []
+    debug_rows: List[Dict] = []
+    eval_history: List[Dict[str, Any]] = []
+
+    if args.resume_from_checkpoint is not None:
+        resumed_steps, resumed_state = load_checkpoint(args.resume_from_checkpoint, student_model, optimizer)
+        train_steps_local = max(train_steps_local, resumed_steps)
+        if accelerator.is_main_process and resumed_state.get('loss_history'):
+            loss_history = list(resumed_state['loss_history'])
+            eval_history = list(resumed_state.get('eval_history', []))
+
+    for _ in range(args.num_train_epochs):
+        for sample_batch in rollout_dataloader:
+            student_outputs = run_rollout(
+                sample_batch,
+                student_model,
+                tokenizer,
+                args.max_new_tokens,
+                args.temperature,
+                accelerator,
+            )
+            batch_rows = build_batch_rows(
+                sample_batch,
+                student_outputs,
+                teacher_model,
+                tokenizer,
+                args.max_new_tokens,
+                accelerator,
+                accelerator.process_index,
+            )
+            reward_1_count_local += sum(1 for row in batch_rows if row['reward'] == 1)
+            reward_0_count_local += sum(1 for row in batch_rows if row['reward'] == 0)
 
             for train_rows in iter_sample_batches(batch_rows, args.batch_size):
                 collated, traced_rows = collate_distill_batch(tokenizer, train_rows, args.max_length)
-                metrics['alignment_skip_count'] += sum(1 for row in traced_rows if not row.get('aligned', False))
-                metrics['aligned_count'] += sum(1 for row in traced_rows if row.get('aligned', False))
+                alignment_skip_count_local += sum(1 for row in traced_rows if not row.get('aligned', False))
+                aligned_count_local += sum(1 for row in traced_rows if row.get('aligned', False))
                 debug_rows.extend(traced_rows)
                 if collated is None:
                     continue
 
-                student_input_ids = collated['student_input_ids'].to(student_device)
-                student_attention_mask = collated['student_attention_mask'].to(student_device)
-                student_target_mask = collated['student_target_mask'].to(student_device)
-                teacher_input_ids = collated['teacher_input_ids'].to(teacher_device)
-                teacher_attention_mask = collated['teacher_attention_mask'].to(teacher_device)
-                teacher_target_mask = collated['teacher_target_mask'].to(teacher_device)
+                student_input_ids = collated['student_input_ids'].to(accelerator.device)
+                student_attention_mask = collated['student_attention_mask'].to(accelerator.device)
+                student_target_mask = collated['student_target_mask'].to(accelerator.device)
+                teacher_input_ids = collated['teacher_input_ids'].to(accelerator.device)
+                teacher_attention_mask = collated['teacher_attention_mask'].to(accelerator.device)
+                teacher_target_mask = collated['teacher_target_mask'].to(accelerator.device)
 
                 optimizer.zero_grad()
                 student_outputs_obj = student_model(input_ids=student_input_ids, attention_mask=student_attention_mask)
@@ -388,7 +619,7 @@ def main() -> None:
                 student_target_logits = student_logits[student_target_mask].view(-1, student_logits.shape[-1])
                 teacher_target_logits = teacher_logits[teacher_target_mask].view(-1, teacher_logits.shape[-1])
                 if student_target_logits.shape[0] != teacher_target_logits.shape[0]:
-                    metrics['alignment_skip_count'] += int(student_target_logits.shape[0] != teacher_target_logits.shape[0])
+                    alignment_skip_count_local += 1
                     continue
 
                 loss = compute_forward_kl(
@@ -396,25 +627,64 @@ def main() -> None:
                     teacher_target_logits.unsqueeze(0).to(student_target_logits.device),
                     torch.ones((1, student_target_logits.shape[0]), dtype=torch.bool, device=student_target_logits.device),
                 )
-                loss.backward()
+                accelerator.backward(loss)
                 optimizer.step()
 
-                metrics['train_steps'] += 1
-                metrics['loss_history'].append(round(float(loss.detach().cpu().item()), 6))
+                train_steps_local += 1
+                gathered_loss = accelerator.gather(loss.detach().reshape(1))
+                if accelerator.is_main_process:
+                    loss_history.append(round(float(gathered_loss.mean().cpu().item()), 6))
+                if args.eval_every_steps and train_steps_local % args.eval_every_steps == 0:
+                    eval_metrics = evaluate_phase2(valid_samples, student_model, teacher_model, tokenizer, args, accelerator)
+                    if accelerator.is_main_process:
+                        eval_metrics['train_step'] = train_steps_local
+                        eval_history.append(eval_metrics)
+                if args.save_every_steps and train_steps_local % args.save_every_steps == 0 and accelerator.is_main_process:
+                    checkpoint_metrics = {
+                        'train_steps': train_steps_local,
+                        'loss_history': loss_history,
+                        'eval_history': eval_history,
+                    }
+                    save_checkpoint(args.checkpoint_dir, train_steps_local, accelerator, student_model, optimizer, checkpoint_metrics)
 
-    student_model.save_pretrained(args.output_dir)
-    tokenizer.save_pretrained(args.output_dir)
+    accelerator.wait_for_everyone()
 
-    if args.save_debug_manifest:
-        write_distill_manifest(args.debug_manifest, debug_rows)
+    if valid_samples:
+        final_eval = evaluate_phase2(valid_samples, student_model, teacher_model, tokenizer, args, accelerator)
+        if accelerator.is_main_process:
+            final_eval['train_step'] = train_steps_local
+            eval_history.append(final_eval)
 
     summary = {
-        **metrics,
+        'count': len(samples),
+        'student_model': args.student_model,
+        'teacher_model': args.teacher_model,
+        'reward_1_count': reduce_count(accelerator, reward_1_count_local),
+        'reward_0_count': reduce_count(accelerator, reward_0_count_local),
+        'alignment_skip_count': reduce_count(accelerator, alignment_skip_count_local),
+        'aligned_count': reduce_count(accelerator, aligned_count_local),
+        'train_steps': train_steps_local,
+        'loss_history': loss_history if accelerator.is_main_process else [],
+        'eval_history': eval_history if accelerator.is_main_process else [],
         'output_dir': str(args.output_dir),
         'debug_manifest': str(args.debug_manifest) if args.save_debug_manifest else None,
+        'checkpoint_dir': str(args.checkpoint_dir),
+        'world_size': accelerator.num_processes,
     }
-    save_train_metrics(args.output_dir, summary)
-    print(json.dumps(summary, ensure_ascii=False, indent=2))
+
+    if args.save_debug_manifest:
+        debug_rows = gather_debug_rows(debug_rows)
+
+    if accelerator.is_main_process:
+        student_to_save = accelerator.unwrap_model(student_model)
+        student_to_save.save_pretrained(args.output_dir)
+        tokenizer.save_pretrained(args.output_dir)
+        if args.save_debug_manifest:
+            write_distill_manifest(args.debug_manifest, debug_rows)
+        save_train_metrics(args.output_dir, summary)
+        print(json.dumps(summary, ensure_ascii=False, indent=2))
+
+    accelerator.wait_for_everyone()
 
 
 if __name__ == '__main__':

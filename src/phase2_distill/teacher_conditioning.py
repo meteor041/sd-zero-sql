@@ -1,6 +1,6 @@
 from typing import Dict
 
-from sql_core.prompt_builders import build_base_sql_prompt
+from sql_core.prompt_builders import build_base_sql_prompt, build_revision_prompt
 from phase1_srt.constants import select_p_r
 
 
@@ -23,14 +23,11 @@ def build_feedback_block(verifier_result: Dict, reward: int) -> str:
 
 
 def build_teacher_prefix(sample: Dict, student_response: str, reward: int, verifier_result: Dict) -> str:
-    student_prompt = build_student_prompt(sample)
-    p_r = select_p_r(reward)
-    feedback_block = build_feedback_block(verifier_result, reward)
-    return f"{student_prompt}{student_response}\n\n{feedback_block}{p_r}\n\n"
+    return build_revision_prompt(sample, student_response, verifier_result)
 
 
 def build_teacher_prompt(sample: Dict, student_response: str, reward: int, verifier_result: Dict) -> str:
-    return build_teacher_prefix(sample, student_response, reward, verifier_result) + student_response
+    return build_teacher_prefix(sample, student_response, reward, verifier_result)
 
 
 def build_teacher_metadata(sample: Dict, student_response: str, reward: int, verifier_result: Dict) -> Dict:

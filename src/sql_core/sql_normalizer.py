@@ -27,10 +27,10 @@ def extract_sql_text(gen: str) -> str:
 
 def first_select_sql(text: str) -> str:
     text = text.strip()
-    select_match = re.search(r"\bSELECT\b", text, flags=re.IGNORECASE)
-    if not select_match:
+    select_matches = list(re.finditer(r"\bSELECT\b", text, flags=re.IGNORECASE))
+    if not select_matches:
         return text
-    sql = text[select_match.start():].strip()
+    sql = text[select_matches[-1].start():].strip()
 
     stop_patterns = [
         r"\nSystem:",
@@ -40,6 +40,10 @@ def first_select_sql(text: str) -> str:
         r"Human:",
         r"You are an expert Text-to-SQL model",
         r"Output only the final SQL query",
+        r"Let me rephrase the above solution",
+        r"Wait, this response is wrong\. Let me correct it",
+        r"Revision cue:",
+        r"Instruction:",
         r"<\|im_end\|>",
     ]
     cut_positions = []

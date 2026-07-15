@@ -99,6 +99,26 @@ def load_tokenizer(model_path: str):
     return tokenizer
 
 
+def prompt_to_messages(prompt: str) -> List[Dict[str, str]]:
+    prompt = prompt.strip()
+    system_text = ''
+    user_text = ''
+    if prompt.startswith('System:\n') and '\n\nUser:\n' in prompt:
+        after_system = prompt[len('System:\n'):]
+        system_text, after_user = after_system.split('\n\nUser:\n', 1)
+        if '\n\nAssistant:' in after_user:
+            user_text = after_user.split('\n\nAssistant:', 1)[0]
+        else:
+            user_text = after_user
+    else:
+        user_text = prompt
+    messages = []
+    if system_text.strip():
+        messages.append({'role': 'system', 'content': system_text.strip()})
+    messages.append({'role': 'user', 'content': user_text.strip()})
+    return messages
+
+
 def _load_base_model(model_path: str, use_4bit: bool, use_bf16: bool):
     quant_config = build_quant_config(use_4bit)
     torch_dtype = torch.bfloat16 if use_bf16 or use_4bit else torch.float16
@@ -154,14 +174,14 @@ def load_teacher_model(args: argparse.Namespace):
     return model
 
 
-def build_sequences(sample: Dict, student_response_sql: str, teacher_revised_sql: str, reward: int, verifier_result: Dict) -> Dict[str, str]:
+def build_sequences(sample: Dict, student_response_sql: str, reward: int, verifier_result: Dict) -> Dict[str, str]:
     student_prompt = build_student_prompt(sample)
     teacher_prefix = build_teacher_prefix(sample, student_response_sql, reward, verifier_result)
     return {
         'student_prompt': student_prompt,
-        'student_target': teacher_revised_sql,
+        'student_target': student_response_sql,
         'teacher_prompt': teacher_prefix,
-        'teacher_target': teacher_revised_sql,
+        'teacher_target': student_response_sql,
     }
 
 
@@ -263,7 +283,11 @@ def run_rollout(samples: List[Dict], model, tokenizer, max_new_tokens: int, temp
     model.eval()
     generation_model = accelerator.unwrap_model(model)
     prompts = [build_student_prompt(sample) for sample in samples]
-    tokenized = tokenizer(prompts, return_tensors='pt', padding=True)
+    rendered_prompts = [
+        tokenizer.apply_chat_template(prompt_to_messages(prompt), add_generation_prompt=True, tokenize=False)
+        for prompt in prompts
+    ]
+    tokenized = tokenizer(rendered_prompts, return_tensors='pt', padding=True)
     input_ids = tokenized.input_ids.to(accelerator.device)
     attention_mask = tokenized.attention_mask.to(accelerator.device)
     generation_kwargs = {
@@ -283,39 +307,17 @@ def run_rollout(samples: List[Dict], model, tokenizer, max_new_tokens: int, temp
     return outputs
 
 
-def build_teacher_targets(
-    rows: List[Dict],
-    teacher_model,
-    tokenizer,
-    max_new_tokens: int,
-    accelerator: Accelerator,
-) -> None:
-    teacher_model.eval()
-    prompts = [row['teacher_prompt'] for row in rows]
-    tokenized = tokenizer(prompts, return_tensors='pt', padding=True)
-    input_ids = tokenized.input_ids.to(accelerator.device)
-    attention_mask = tokenized.attention_mask.to(accelerator.device)
-    with torch.no_grad():
-        generated = teacher_model.generate(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            max_new_tokens=max_new_tokens,
-            do_sample=False,
-            pad_token_id=tokenizer.pad_token_id,
-            eos_token_id=tokenizer.eos_token_id,
-        )
-    input_len = input_ids.shape[1]
-    outputs = [tokenizer.decode(sequence[input_len:], skip_special_tokens=True).strip() for sequence in generated]
-    for row, teacher_output in zip(rows, outputs):
-        row['teacher_response_raw'] = teacher_output
-        row['teacher_revised_sql'] = normalize_sql_output(teacher_output)
-
-
 def build_batch_rows(samples: List[Dict], student_outputs: List[str], teacher_model, tokenizer, max_new_tokens: int, accelerator: Accelerator, rank: int) -> List[Dict]:
     rows = []
     for sample, student_response in zip(samples, student_outputs):
         reward_info = compute_sql_reward(sample, student_response)
         teacher_meta = build_teacher_metadata(
+            sample,
+            reward_info['normalized_sql'],
+            reward_info['reward'],
+            reward_info['verifier_result'],
+        )
+        sequences = build_sequences(
             sample,
             reward_info['normalized_sql'],
             reward_info['reward'],
@@ -334,30 +336,15 @@ def build_batch_rows(samples: List[Dict], student_outputs: List[str], teacher_mo
                 'verifier_result': reward_info['verifier_result'],
                 'p_r': teacher_meta['p_r'],
                 'feedback_block': teacher_meta['feedback_block'],
-                'teacher_prompt': teacher_meta['teacher_prompt'],
-            }
-        )
-
-    build_teacher_targets(rows, teacher_model, tokenizer, max_new_tokens, accelerator)
-
-    final_rows = []
-    for sample, row in zip(samples, rows):
-        sequences = build_sequences(
-            sample,
-            row['student_response_sql'],
-            row['teacher_revised_sql'],
-            row['reward'],
-            row['verifier_result'],
-        )
-        row.update(
-            {
+                'teacher_prompt': sequences['teacher_prompt'],
                 'student_prompt': sequences['student_prompt'],
                 'student_target': sequences['student_target'],
                 'teacher_target': sequences['teacher_target'],
+                'teacher_response_raw': None,
+                'teacher_revised_sql': None,
             }
         )
-        final_rows.append(row)
-    return final_rows
+    return rows
 
 
 def compute_forward_kl(student_logits: torch.Tensor, teacher_logits: torch.Tensor, target_mask: torch.Tensor) -> torch.Tensor:

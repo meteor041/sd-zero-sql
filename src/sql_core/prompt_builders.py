@@ -46,9 +46,6 @@ def build_revision_prompt(sample: Dict, y_init: str, verifier_result: Dict) -> s
     question = (sample.get("question") or "").strip()
     reward = int(verifier_result.get("reward", 0))
     error_type = verifier_result.get("error_type", "unknown")
-    error_message = verifier_result.get("error_message", "")
-    pred_result_preview = verifier_result.get("pred_result_preview", "")
-    gold_result_preview = verifier_result.get("gold_result_preview", "")
     instruction = build_revision_instruction(reward)
     return f"""System:
 {SYSTEM_PROMPT}
@@ -71,15 +68,6 @@ Verifier reward:
 
 Error type:
 {error_type}
-
-Error message:
-{error_message}
-
-Predicted result preview:
-{pred_result_preview}
-
-Gold result preview:
-{gold_result_preview}
 
 Revision instruction:
 {instruction}

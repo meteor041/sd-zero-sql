@@ -23,7 +23,15 @@ def build_feedback_block(verifier_result: Dict, reward: int) -> str:
 
 
 def build_teacher_prefix(sample: Dict, student_response: str, reward: int, verifier_result: Dict) -> str:
-    return build_revision_prompt(sample, student_response, verifier_result)
+    student_prompt = build_student_prompt(sample)
+    p_r = select_p_r(reward)
+    return (
+        f"{student_prompt}"
+        f"Student SQL:\n{student_response}\n\n"
+        f"Revision cue:\n{p_r}\n\n"
+        f"Instruction:\nReturn only the final corrected SQL query. The output must start with SELECT.\n\n"
+        f"Assistant:\n"
+    )
 
 
 def build_teacher_prompt(sample: Dict, student_response: str, reward: int, verifier_result: Dict) -> str:

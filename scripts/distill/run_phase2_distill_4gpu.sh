@@ -48,7 +48,7 @@ ${ACCELERATE_BIN} \
   --num-train-epochs 1 \
   --learning-rate 1e-5 \
   --max-length 4096 \
-  --max-new-tokens 256 \
+  --max-new-tokens 1024 \
   --temperature 0.0 \
   --bf16 \
   --gradient-checkpointing \

@@ -16,7 +16,7 @@ save_every_steps: 0
 eval_every_steps: 0
 resume_from_checkpoint: null
 max_length: 4096
-max_new_tokens: 256
+max_new_tokens: 1024
 temperature: 0.0
 tensor_parallel_size: 1
 gpu_memory_utilization: 0.9

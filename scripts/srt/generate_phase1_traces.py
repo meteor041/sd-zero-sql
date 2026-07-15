@@ -18,7 +18,7 @@ from sql_core.generation_backend import load_generator
 from sql_core.prompt_builders import build_base_sql_prompt, build_revision_prompt
 from phase1_srt.trace_schema import build_trace_record
 from sql_core.sql_normalizer import normalize_sql_output
-from sql_core.sql_verifier import prepare_gold_execution, verify_sql_against_gold
+from sql_core.sql_verifier import prepare_gold_execution, verify_sql, verify_sql_against_gold
 
 DEFAULT_MODEL_PATH = '/data/model/Qwen3-4B-Instruct-2507'
 DEFAULT_INPUT_JSONL = PROJECT_ROOT / 'data' / 'ches_train_sft_train_4k.jsonl'

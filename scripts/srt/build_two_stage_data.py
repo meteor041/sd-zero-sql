@@ -1,165 +1,241 @@
 import argparse
 import json
+import math
 import random
 import sys
+from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-SRC_ROOT = PROJECT_ROOT / 'src'
+SRC_ROOT = PROJECT_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from phase1_srt.trace_schema import dedupe_trace_key, normalize_trace_record, validate_trace_record
 from sql_core.prompt_builders import build_revision_continuation_prompt
 
-DEFAULT_TRACE_JSONL = PROJECT_ROOT / 'data' / 'srt' / 'traces_train_1k_stratified_vllm.jsonl'
-DEFAULT_OUTPUT_DIR = PROJECT_ROOT / 'data' / 'srt'
-DEFAULT_PREFIX = 'ches_qwen3_4b_srt'
+DEFAULT_TRACE_JSONL = PROJECT_ROOT / "data" / "srt" / "traces_train_full_1init_3revision.jsonl"
+DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "data" / "srt"
+DEFAULT_PREFIX = "ches_qwen3_4b_srt"
 
 
 def load_jsonl(path: Path) -> List[Dict[str, Any]]:
     rows = []
-    with open(path, 'r', encoding='utf-8') as f:
-        for line in f:
+    with open(path, "r", encoding="utf-8") as handle:
+        for line in handle:
             line = line.strip()
-            if not line:
-                continue
-            rows.append(json.loads(line))
+            if line:
+                rows.append(json.loads(line))
     return rows
 
 
+def _question_key(record: Dict[str, Any]) -> str:
+    value = record.get("id")
+    return str(value) if value is not None else str(record["x"])
+
+
 def _dedupe_and_filter(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    out = []
+    output = []
     seen = set()
     for record in records:
         normalized = normalize_trace_record(record)
         validate_trace_record(normalized)
-        if not normalized.get('keep', False):
-            continue
-        if not normalized.get('y_revised_correct', False):
+        if not normalized.get("keep", False) or not normalized.get("y_revised_correct", False):
             continue
         key = dedupe_trace_key(normalized)
         if key in seen:
             continue
         seen.add(key)
-        out.append(normalized)
-    return out
+        output.append(normalized)
+    return output
 
 
-def _stage1_record(record: Dict[str, Any]) -> Dict[str, Any]:
-    prompt = record['x']
-    completion = f"{record['y_init']}\n\n{record['p_r']}\n\n{record['y_revised']}"
+def _cap_traces_per_question(
+    records: List[Dict[str, Any]],
+    max_traces_per_question: int,
+    rng: random.Random,
+) -> List[Dict[str, Any]]:
+    if max_traces_per_question <= 0:
+        return records
+    grouped: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for record in records:
+        grouped[_question_key(record)].append(record)
+
+    output = []
+    for key in sorted(grouped):
+        group = grouped[key]
+        rng.shuffle(group)
+        output.extend(group[:max_traces_per_question])
+    return output
+
+
+def _balance_outcomes(
+    records: List[Dict[str, Any]],
+    max_correct_init_ratio: float,
+    rng: random.Random,
+) -> List[Dict[str, Any]]:
+    if not 0.0 <= max_correct_init_ratio <= 1.0:
+        raise ValueError("max_correct_init_ratio must be between 0 and 1")
+    incorrect = [record for record in records if not record["y_init_correct"]]
+    correct = [record for record in records if record["y_init_correct"]]
+    if not incorrect:
+        raise ValueError(
+            "No successful incorrect-init revisions were found. The model has not produced "
+            "the correction supervision required by SRT."
+        )
+    if max_correct_init_ratio < 1.0:
+        max_correct = math.floor(len(incorrect) * max_correct_init_ratio / (1.0 - max_correct_init_ratio))
+        rng.shuffle(correct)
+        correct = correct[:max_correct]
+    output = incorrect + correct
+    rng.shuffle(output)
+    return output
+
+
+def generation_task_record(record: Dict[str, Any]) -> Dict[str, Any]:
+    completion = f"{record['y_init'].strip()}\n\n{record['p_r']}\n\n{record['y_revised'].strip()}"
+    return _task_record(record, "generation", record["x"], completion)
+
+
+def revision_task_record(record: Dict[str, Any]) -> Dict[str, Any]:
+    prompt = build_revision_continuation_prompt(record["x"], record["y_init"], record["p_r"])
+    return _task_record(record, "revision", prompt, record["y_revised"].strip())
+
+
+def _task_record(record: Dict[str, Any], task: str, prompt: str, completion: str) -> Dict[str, Any]:
+    trace_id = record.get("trace_id") or (
+        f"{_question_key(record)}__init{record.get('init_index', 0)}"
+        f"__revision{record.get('revision_index', 0)}"
+    )
     return {
-        'id': record.get('id'),
-        'db_id': record.get('db_id'),
-        'prompt': prompt,
-        'completion': completion,
-        'text': prompt + completion,
+        "id": record.get("id"),
+        "db_id": record.get("db_id"),
+        "trace_id": trace_id,
+        "task": task,
+        "y_init_correct": bool(record["y_init_correct"]),
+        "prompt": prompt,
+        "completion": completion,
     }
 
 
-def _stage2_record(record: Dict[str, Any]) -> Dict[str, Any]:
-    prompt = build_revision_continuation_prompt(record['x'], record['y_init'], record['p_r'])
-    completion = record['y_revised']
-    return {
-        'id': record.get('id'),
-        'db_id': record.get('db_id'),
-        'prompt': prompt,
-        'completion': completion,
-        'text': prompt + completion,
-    }
+def _split_by_question(
+    records: List[Dict[str, Any]],
+    validation_fraction: float,
+    rng: random.Random,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    if not 0.0 <= validation_fraction < 1.0:
+        raise ValueError("validation_fraction must be in [0, 1)")
+    question_keys = sorted({_question_key(record) for record in records})
+    rng.shuffle(question_keys)
+    validation_count = 0
+    if validation_fraction > 0 and len(question_keys) > 1:
+        validation_count = max(1, round(len(question_keys) * validation_fraction))
+    validation_keys = set(question_keys[:validation_count])
+    train = [record for record in records if _question_key(record) not in validation_keys]
+    validation = [record for record in records if _question_key(record) in validation_keys]
+    return train, validation
 
 
-def prepare_srt_stage_data(input_path: Path, output_dir: Path, stage2_size: int, seed: int, prefix: str, min_stage1_size: int = 0) -> Tuple[Path, Path, Dict[str, Any]]:
+def _expand_tasks(records: List[Dict[str, Any]], rng: random.Random) -> List[Dict[str, Any]]:
+    rows = []
+    for record in records:
+        rows.append(generation_task_record(record))
+        rows.append(revision_task_record(record))
+    rng.shuffle(rows)
+    return rows
+
+
+def _write_jsonl(path: Path, rows: List[Dict[str, Any]]) -> None:
+    with open(path, "w", encoding="utf-8") as handle:
+        for row in rows:
+            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
+def prepare_srt_multitask_data(
+    input_path: Path,
+    output_dir: Path,
+    seed: int,
+    prefix: str,
+    validation_fraction: float = 0.05,
+    max_traces_per_question: int = 3,
+    max_correct_init_ratio: float = 0.5,
+) -> Tuple[Path, Path, Dict[str, Any]]:
+    rng = random.Random(seed)
     records = _dedupe_and_filter(load_jsonl(input_path))
     if not records:
-        raise ValueError('No usable revision tuples (keep=True and y_revised_correct=True) were found.')
+        raise ValueError("No verified-correct revision traces were found.")
 
-    incorrect_init = [record for record in records if not record['y_init_correct']]
-    correct_init = [record for record in records if record['y_init_correct']]
+    records = _cap_traces_per_question(records, max_traces_per_question, rng)
+    records = _balance_outcomes(records, max_correct_init_ratio, rng)
+    train_traces, validation_traces = _split_by_question(records, validation_fraction, rng)
+    if not train_traces:
+        raise ValueError("The question-level split produced an empty training set.")
 
-    rng = random.Random(seed)
-    rng.shuffle(incorrect_init)
-    rng.shuffle(correct_init)
-
-    n_correct_s2 = min(len(correct_init), stage2_size)
-    n_incorrect_s2 = min(len(incorrect_init), stage2_size - n_correct_s2)
-    stage2_src = correct_init[:n_correct_s2] + incorrect_init[:n_incorrect_s2]
-    rng.shuffle(stage2_src)
-    stage1_src = incorrect_init[n_incorrect_s2:]
-
-    if len(stage1_src) < min_stage1_size:
-        backfill_needed = min_stage1_size - len(stage1_src)
-        correct_pool = correct_init[n_correct_s2:]
-        stage1_src.extend(correct_pool[:backfill_needed])
-
-    if not stage1_src:
-        raise ValueError('Stage 1 would be empty. Collect more incorrect-init successful traces or lower stage2_size.')
-    if not stage2_src:
-        raise ValueError('Stage 2 would be empty. No usable revision tuples were found.')
-
-    stage1 = [_stage1_record(record) for record in stage1_src]
-    stage2 = [_stage2_record(record) for record in stage2_src]
-
+    train_rows = _expand_tasks(train_traces, rng)
+    validation_rows = _expand_tasks(validation_traces, rng)
     output_dir.mkdir(parents=True, exist_ok=True)
-    stage1_path = output_dir / f'{prefix}_stage1.jsonl'
-    stage2_path = output_dir / f'{prefix}_stage2.jsonl'
+    train_path = output_dir / f"{prefix}_train.jsonl"
+    validation_path = output_dir / f"{prefix}_valid.jsonl"
+    _write_jsonl(train_path, train_rows)
+    _write_jsonl(validation_path, validation_rows)
 
-    with open(stage1_path, 'w', encoding='utf-8') as f:
-        for row in stage1:
-            f.write(json.dumps(row, ensure_ascii=False) + '\n')
-    with open(stage2_path, 'w', encoding='utf-8') as f:
-        for row in stage2:
-            f.write(json.dumps(row, ensure_ascii=False) + '\n')
-
+    incorrect_count = sum(not record["y_init_correct"] for record in records)
+    correct_count = len(records) - incorrect_count
     summary = {
-        'input_trace_file': str(input_path),
-        'total_kept_traces': len(records),
-        'incorrect_init_count': len(incorrect_init),
-        'correct_init_count': len(correct_init),
-        'stage1_count': len(stage1),
-        'stage1_min_requested': min_stage1_size,
-        'stage2_count': len(stage2),
-        'stage2_incorrect_count': n_incorrect_s2,
-        'stage2_correct_count': n_correct_s2,
-        'prefix': prefix,
-        'stage1_path': str(stage1_path),
-        'stage2_path': str(stage2_path),
+        "input_trace_file": str(input_path),
+        "usable_trace_count": len(records),
+        "unique_question_count": len({_question_key(record) for record in records}),
+        "incorrect_init_trace_count": incorrect_count,
+        "correct_init_trace_count": correct_count,
+        "correct_init_ratio": round(correct_count / len(records), 4),
+        "train_trace_count": len(train_traces),
+        "validation_trace_count": len(validation_traces),
+        "train_task_record_count": len(train_rows),
+        "validation_task_record_count": len(validation_rows),
+        "generation_task_count": len(records),
+        "revision_task_count": len(records),
+        "validation_fraction": validation_fraction,
+        "max_traces_per_question": max_traces_per_question,
+        "max_correct_init_ratio": max_correct_init_ratio,
+        "train_path": str(train_path),
+        "validation_path": str(validation_path),
     }
-    return stage1_path, stage2_path, summary
+    return train_path, validation_path, summary
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description='Build official-style two-stage Phase1 SRT data.')
-    parser.add_argument('--input', type=Path, default=DEFAULT_TRACE_JSONL)
-    parser.add_argument('--output-dir', type=Path, default=DEFAULT_OUTPUT_DIR)
-    parser.add_argument('--stage2-size', type=int, default=1000)
-    parser.add_argument('--min-stage1-size', type=int, default=0)
-    parser.add_argument('--seed', type=int, default=42)
-    parser.add_argument('--prefix', type=str, default=DEFAULT_PREFIX)
+    parser = argparse.ArgumentParser(description="Build joint generation/revision Phase1 SRT data.")
+    parser.add_argument("--input", type=Path, default=DEFAULT_TRACE_JSONL)
+    parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
+    parser.add_argument("--validation-fraction", type=float, default=0.05)
+    parser.add_argument("--max-traces-per-question", type=int, default=3)
+    parser.add_argument("--max-correct-init-ratio", type=float, default=0.5)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--prefix", type=str, default=DEFAULT_PREFIX)
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    stage1_path, stage2_path, summary = prepare_srt_stage_data(
+    train_path, validation_path, summary = prepare_srt_multitask_data(
         input_path=args.input,
         output_dir=args.output_dir,
-        stage2_size=args.stage2_size,
         seed=args.seed,
         prefix=args.prefix,
-        min_stage1_size=args.min_stage1_size,
+        validation_fraction=args.validation_fraction,
+        max_traces_per_question=args.max_traces_per_question,
+        max_correct_init_ratio=args.max_correct_init_ratio,
     )
-    summary_path = args.output_dir / f'{args.prefix}_stage_summary.json'
-    with open(summary_path, 'w', encoding='utf-8') as f:
-        json.dump(summary, f, ensure_ascii=False, indent=2)
+    summary_path = args.output_dir / f"{args.prefix}_summary.json"
+    with open(summary_path, "w", encoding="utf-8") as handle:
+        json.dump(summary, handle, ensure_ascii=False, indent=2)
 
     print(json.dumps(summary, ensure_ascii=False, indent=2))
-    print(f'Stage1: {stage1_path}')
-    print(f'Stage2: {stage2_path}')
-    print(f'Summary: {summary_path}')
+    print(f"Train: {train_path}")
+    print(f"Validation: {validation_path}")
+    print(f"Summary: {summary_path}")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

@@ -2,5 +2,5 @@
 from pathlib import Path
 import runpy
 
-TARGET = Path('/home/pkuccadm/huwenp/emb/lxy/sd-zero-sql/scripts/sft/train_sft.py')
+TARGET = Path(__file__).resolve().parent / 'sft' / 'train_sft.py'
 runpy.run_path(str(TARGET), run_name='__main__')

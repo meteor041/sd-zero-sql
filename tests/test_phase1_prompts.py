@@ -10,7 +10,11 @@ from scripts.srt.build_two_stage_data import (
 )
 from scripts.srt.generate_phase1_traces import generate_revised_candidates
 from src.phase1_srt.constants import P_R_INCORRECT
-from src.phase1_srt.training_data import OverlengthCompletionExample, tokenize_completion_example
+from src.phase1_srt.training_data import (
+    OverlengthCompletionExample,
+    tokenize_completion_example,
+    tokenize_completion_rows,
+)
 from src.sql_core.prompt_builders import build_base_sql_prompt, build_revision_prompt
 
 
@@ -170,6 +174,20 @@ class Phase1TrainingDataTests(unittest.TestCase):
                 FakeTokenizer(),
                 max_length=5,
             )
+
+    def test_drop_policy_reports_every_overlength_example(self) -> None:
+        rows, stats = tokenize_completion_rows(
+            [
+                {"id": "short", "prompt": "p", "completion": "s"},
+                {"id": "long", "prompt": "12345", "completion": "67890"},
+            ],
+            FakeTokenizer(),
+            max_length=12,
+            overlength_policy="drop",
+        )
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(stats["dropped_overlength_examples"], 1)
+        self.assertEqual(stats["dropped_examples"][0]["id"], "long")
 
     def test_multitask_builder_splits_by_question_and_balances_outcomes(self) -> None:
         records = []

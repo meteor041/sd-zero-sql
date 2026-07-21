@@ -2,8 +2,8 @@
 set -euo pipefail
 
 MODEL_PATH="/data/model/Qwen3-4B-Instruct-2507"
-TRAIN_FILE="/home/pkuccadm/huwenp/emb/lxy/sd-zero-sql/data/ches_train_sft_train_4k.jsonl"
-VALID_FILE="/home/pkuccadm/huwenp/emb/lxy/sd-zero-sql/data/ches_train_sft_valid_4k.jsonl"
+TRAIN_FILE="/home/pkuccadm/huwenp/emb/lxy/M-Schema/ches_train_sft_train.jsonl"
+VALID_FILE="/home/pkuccadm/huwenp/emb/lxy/M-Schema/ches_train_sft_valid.jsonl"
 OUTPUT_DIR="/data/huwenp/emb/lxy/sd-zero-sql/outputs/qwen3_4b_sft_smoke"
 
 # 默认只用当前空闲的 3 张卡，避免与他人任务冲突
@@ -26,11 +26,12 @@ ${ACCELERATE_BIN} \
   --train-file "${TRAIN_FILE}" \
   --valid-file "${VALID_FILE}" \
   --output-dir "${OUTPUT_DIR}" \
-  --max-length 4096 \
+  --max-length 8192 \
+  --overlength-policy error \
   --num-train-epochs 1 \
-  --learning-rate 2e-4 \
-  --weight-decay 0.01 \
-  --warmup-ratio 0.03 \
+  --learning-rate 1e-4 \
+  --weight-decay 1e-4 \
+  --warmup-ratio 0.05 \
   --lr-scheduler-type cosine \
   --per-device-train-batch-size 1 \
   --per-device-eval-batch-size 1 \

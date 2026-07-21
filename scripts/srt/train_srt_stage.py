@@ -3,7 +3,7 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SRC_ROOT = PROJECT_ROOT / "src"
@@ -22,7 +22,7 @@ from transformers import (
     TrainingArguments,
 )
 
-from phase1_srt.training_data import OverlengthCompletionExample, tokenize_completion_example
+from phase1_srt.training_data import tokenize_completion_rows
 
 
 def parse_args() -> argparse.Namespace:
@@ -85,45 +85,12 @@ def tokenize_dataset(
     max_length: int,
     overlength_policy: str,
 ) -> tuple[Dataset, Dict[str, Any]]:
-    encoded_rows: List[Dict[str, Any]] = []
-    dropped: List[Dict[str, Any]] = []
-    prompt_tokens = 0
-    completion_tokens = 0
-
-    for index, example in enumerate(dataset):
-        try:
-            encoded = tokenize_completion_example(example, tokenizer, max_length)
-        except OverlengthCompletionExample as exc:
-            dropped.append(
-                {
-                    "index": index,
-                    "id": example.get("id"),
-                    "trace_id": example.get("trace_id"),
-                    "task": example.get("task"),
-                    "error": str(exc),
-                }
-            )
-            continue
-        prompt_tokens += encoded.pop("prompt_token_length")
-        completion_tokens += encoded.pop("completion_token_length")
-        encoded_rows.append(encoded)
-
-    if dropped and overlength_policy == "error":
-        preview = "\n".join(item["error"] for item in dropped[:5])
-        raise ValueError(f"Found {len(dropped)} overlength examples:\n{preview}")
-    if not encoded_rows:
-        raise ValueError("No training examples remain after tokenization.")
-
-    supervised_ratio = completion_tokens / (prompt_tokens + completion_tokens)
-    stats = {
-        "input_examples": len(dataset),
-        "kept_examples": len(encoded_rows),
-        "dropped_overlength_examples": len(dropped),
-        "prompt_tokens": prompt_tokens,
-        "completion_tokens": completion_tokens,
-        "supervised_token_ratio": round(supervised_ratio, 6),
-        "dropped_examples": dropped[:100],
-    }
+    encoded_rows, stats = tokenize_completion_rows(
+        dataset,
+        tokenizer,
+        max_length,
+        overlength_policy,
+    )
     return Dataset.from_list(encoded_rows), stats
 
 

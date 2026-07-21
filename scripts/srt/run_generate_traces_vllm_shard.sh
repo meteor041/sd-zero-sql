@@ -2,6 +2,7 @@
 set -euo pipefail
 
 MODEL_PATH="${MODEL_PATH:-/data/huwenp/emb/lxy/sd-zero-sql/outputs/qwen3_4b_sft_merged_8k}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INPUT_JSONL="${INPUT_JSONL:-/home/pkuccadm/huwenp/emb/lxy/M-Schema/ches_train_sft.jsonl}"
 OUTPUT_JSONL="${OUTPUT_JSONL:-/data/huwenp/emb/lxy/sd-zero-sql/data/srt/traces_train_shard_vllm.jsonl}"
 SUMMARY_JSON="${SUMMARY_JSON:-/data/huwenp/emb/lxy/sd-zero-sql/data/srt/traces_train_shard_vllm_summary.json}"
@@ -9,7 +10,6 @@ SUMMARY_JSON="${SUMMARY_JSON:-/data/huwenp/emb/lxy/sd-zero-sql/data/srt/traces_t
 MAX_SAMPLES="${MAX_SAMPLES:-100}"
 NUM_INITS="${NUM_INITS:-1}"
 NUM_REVISIONS="${NUM_REVISIONS:-3}"
-SAMPLE_CHUNK_SIZE="${SAMPLE_CHUNK_SIZE:-16}"
 NUM_SHARDS="${NUM_SHARDS:-1}"
 SHARD_INDEX="${SHARD_INDEX:-0}"
 SEED="${SEED:-42}"
@@ -33,7 +33,7 @@ if [[ ! -f "${MODEL_PATH}/config.json" ]]; then
   exit 1
 fi
 
-${PYTHON_BIN} /home/pkuccadm/huwenp/emb/lxy/sd-zero-sql/scripts/srt/generate_phase1_traces.py \
+${PYTHON_BIN} "${SCRIPT_DIR}/generate_phase1_traces.py" \
   --model-path "${MODEL_PATH}" \
   --input-jsonl "${INPUT_JSONL}" \
   --output-jsonl "${OUTPUT_JSONL}" \
@@ -52,7 +52,6 @@ ${PYTHON_BIN} /home/pkuccadm/huwenp/emb/lxy/sd-zero-sql/scripts/srt/generate_pha
   --num-inits "${NUM_INITS}" \
   --num-revisions "${NUM_REVISIONS}" \
   --max-model-len "${MAX_MODEL_LEN}" \
-  --sample-chunk-size "${SAMPLE_CHUNK_SIZE}" \
   --verifier-workers 16 \
   --num-shards "${NUM_SHARDS}" \
   --shard-index "${SHARD_INDEX}"

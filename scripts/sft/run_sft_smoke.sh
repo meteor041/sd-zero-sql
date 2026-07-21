@@ -13,7 +13,7 @@ export NCCL_DEBUG=${NCCL_DEBUG:-WARN}
 export PYTORCH_CUDA_ALLOC_CONF=${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}
 
 mkdir -p "${OUTPUT_DIR}"
-mkdir -p /home/pkuccadm/huwenp/emb/lxy/sd-zero-sql/logs
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 PYTHON_BIN=${PYTHON_BIN:-/home/pkuccadm/anaconda3/bin/python}
 ACCELERATE_BIN=${ACCELERATE_BIN:-${PYTHON_BIN} -m accelerate.commands.launch}
@@ -21,7 +21,7 @@ ACCELERATE_BIN=${ACCELERATE_BIN:-${PYTHON_BIN} -m accelerate.commands.launch}
 ${ACCELERATE_BIN} \
   --num_processes 3 \
   --mixed_precision bf16 \
-  /home/pkuccadm/huwenp/emb/lxy/sd-zero-sql/scripts/sft/train_sft.py \
+  "${SCRIPT_DIR}/train_sft.py" \
   --model-path "${MODEL_PATH}" \
   --train-file "${TRAIN_FILE}" \
   --valid-file "${VALID_FILE}" \

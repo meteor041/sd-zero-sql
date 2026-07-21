@@ -18,7 +18,7 @@ from sql_core.generation_backend import load_generator
 from sql_core.prompt_builders import build_base_sql_prompt, build_revision_prompt
 from phase1_srt.trace_schema import build_trace_record
 from sql_core.sql_normalizer import normalize_sql_output
-from sql_core.sql_verifier import prepare_gold_execution, verify_sql, verify_sql_against_gold
+from sql_core.sql_verifier import verify_sql
 
 DEFAULT_MODEL_PATH = '/data/model/Qwen3-4B-Instruct-2507'
 DEFAULT_INPUT_JSONL = Path('/home/pkuccadm/huwenp/emb/lxy/M-Schema/ches_train_sft.jsonl')
@@ -38,7 +38,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--top-p', type=float, default=1.0)
     parser.add_argument('--num-inits', type=int, default=1)
     parser.add_argument('--num-revisions', type=int, default=3)
-    parser.add_argument('--sample-chunk-size', type=int, default=8)
     parser.add_argument('--num-shards', type=int, default=1)
     parser.add_argument('--shard-index', type=int, default=0)
     parser.add_argument('--bf16', action='store_true')
@@ -135,7 +134,6 @@ def init_summary_state(args: argparse.Namespace, selected_count: int, shard_coun
         'processed_sample_count': 0,
         'num_inits': args.num_inits,
         'num_revisions': args.num_revisions,
-        'sample_chunk_size': args.sample_chunk_size,
         'num_shards': args.num_shards,
         'shard_index': args.shard_index,
         'batch_size': args.batch_size,
@@ -190,7 +188,6 @@ def materialize_summary(state: Dict[str, Any]) -> Dict[str, Any]:
         'processed_sample_count': state['processed_sample_count'],
         'num_inits': state['num_inits'],
         'num_revisions': state['num_revisions'],
-        'sample_chunk_size': state['sample_chunk_size'],
         'num_shards': state['num_shards'],
         'shard_index': state['shard_index'],
         'batch_size': state['batch_size'],
@@ -359,14 +356,12 @@ def generate_init_candidates(samples: List[Dict], generator, batch_size: int, ma
 
     stage_rows = []
     for sample, prompt, output_start in zip(safe_samples, safe_prompts, range(0, len(raw_outputs), num_inits)):
-        prepared_gold = prepare_gold_execution(sample['db_id'], sample['gold_sql'])
         for init_index, raw_y_init in enumerate(raw_outputs[output_start:output_start + num_inits]):
             y_init = normalize_sql_output(raw_y_init)
             stage_rows.append(
                 {
                     'sample': sample,
                     'base_prompt': prompt,
-                    'prepared_gold': prepared_gold,
                     'init_index': init_index,
                     'raw_y_init': raw_y_init,
                     'y_init': y_init,
@@ -535,7 +530,7 @@ def main() -> None:
     state = init_summary_state(args, selected_count=len(selected_samples), shard_count=len(samples))
 
     print(
-        f'Using backend={args.backend} batch_size={args.batch_size} sample_chunk_size={args.sample_chunk_size} '
+        f'Using backend={args.backend} batch_size={args.batch_size} '
         f'samples={len(samples)} num_inits={args.num_inits} num_revisions={args.num_revisions} '
         f'shard={args.shard_index}/{args.num_shards}'
     )

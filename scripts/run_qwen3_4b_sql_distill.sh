@@ -1,3 +1,4 @@
 #!/usr/bin/env bash
 set -euo pipefail
-exec bash "/home/pkuccadm/huwenp/emb/lxy/sd-zero-sql/scripts/distill/run_phase2_distill.sh" "$@"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec bash "${SCRIPT_DIR}/distill/run_phase2_distill.sh" "$@"

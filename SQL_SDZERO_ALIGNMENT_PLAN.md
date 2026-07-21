@@ -1,225 +1,64 @@
-# SD-Zero SQL 对齐方案
+# SD-Zero SQL 对齐与验收说明
 
-本文档说明如何在 **`sd-zero-sql`** 中实现面向 CHES Text-to-SQL 的 SD-Zero 流程，并尽量对齐官方仓库：
+## 1. 论文、原仓库与当前实现
 
-- 官方参考仓库：`/home/pkuccadm/huwenp/emb/lxy/Self-Distillation-Zero-main`
-- 本地任务仓库：`/home/pkuccadm/huwenp/emb/lxy/sd-zero-sql`
+| 项目 | 论文 | 原仓库默认脚本 | 当前实现 |
+|---|---|---|---|
+| Phase1 采样 | 每题 1 个初答、3 个修订 | 3 个初答、3 个修订，默认跳过正确初答 | 每题 1 个初答、3 个修订，正确和错误初答都修订 |
+| 修订条件 | 同一 assistant 流中的 `x + y_init + P_r` | 同一 assistant 流 | 同一 assistant 流，采样与训练共用构造函数 |
+| Phase1 目标 | `L_generation + L_revision` | 顺序训练两个 stage | 单次联合多任务训练 |
+| Loss mask | completion-only | completion-only | completion-only，显式 labels |
+| 上下文 | 32K | 32K | SQL 适配为 8K，禁止静默截断 |
+| Qwen thinking | 关闭 | 调用 chat template | chat template 显式 `enable_thinking=False` |
+| Phase1 优化 | 全参 FSDP、`5e-6` | 全参 FSDP | LoRA SQL 适配，Phase1 `2e-5`，产出后合并 |
+| Phase2 KL | `KL(student || teacher)` | NeMo 实现 | 显式 `KL(student || teacher)` |
 
-核心原则不是“把官方代码整仓搬过来”，也不是“完全重新写一套”，而是：
+原仓库的 two-stage 训练和默认采样参数与论文正文/附录并不完全一致，因此当前实现以论文目标和消融结论为准，而不是机械复制启动脚本。
 
-> **所有 CHES SQL 任务代码继续放在 `sd-zero-sql` 中；方法结构、数据契约、阶段划分尽量与官方 SD-Zero 对齐。**
+## 2. SQL 领域的必要适配
 
----
+论文中的 Qwen 基座在 math/code 上已有较高正确率。裸 Qwen 在复杂 Text-to-SQL 上通常不满足这个前提，因此当前性能优先路径先进行 gold-SQL completion-only SFT，再从该 on-domain 模型收集自修订轨迹。
 
-## 1. 目标
+这意味着当前实验不是严格的“无高质量示范”复现。若研究目标要求完全遵守 SD-Zero Zero-Demonstration 设定，应改用已有能力足够强且未在当前 gold SQL 上训练的 Text-to-SQL 基座，并单独报告其来源和初始 BIRD 分数。
 
-把官方 SD-Zero 的两阶段方法映射到 SQL：
+## 3. Phase1 数据契约
 
-### Phase 1 — Self-Revision Training (SRT)
-对每个 SQL 样本 `x`：
-1. base / SFT 模型生成 `y_init`
-2. 用 SQL verifier 打分得到二元 reward `r ∈ {0,1}`
-3. 选择控制短语 `P_r`
-4. 生成 `y_revised`
-5. 只保留 revision 后验证正确的轨迹
-6. 构造成 **two-stage SFT** 数据：
-   - Stage 1: `x -> y_init + P_r + y_revised`
-   - Stage 2: `x + y_init + P_r -> y_revised`
+轨迹必须至少包含：
 
-### Phase 2 — On-policy Self-Distillation
-1. student 从 `x` 生成 `y`
-2. SQL verifier 给出 reward `r` 和 feedback
-3. teacher（冻结的 Phase1 SRT 模型）接收 `x + y + r + feedback + P_r`
-4. teacher 仅在目标 SQL 区间上提供 token-level logits
-5. student 用 KL 损失蒸馏 teacher 的修订知识
+- `id`, `db_id`, `x`, `gold_sql`
+- `y_init`, `y_init_correct`, `p_r`
+- `y_revised`, `y_revised_correct`, `keep`
+- `verifier_init`, `verifier_revised`
+- `init_index`, `revision_index`
 
----
+只有 `keep=True` 且 `y_revised_correct=True` 的轨迹可进入训练。构建器按问题分割 train/valid，每题最多三条轨迹，并保留所有错误初答成功修订；正确初答轨迹最多占 50%。
 
-## 2. 当前代码组织
+每条轨迹产生两个训练样本：
 
-### `src/sql_core/`
-放 SQL 通用基础设施：
-- `src/sql_core/prompt_builders.py`
-- `src/sql_core/sql_normalizer.py`
-- `src/sql_core/sql_verifier.py`
-- `src/sql_core/generation_backend.py`
+1. Generation：`prompt=x`，`completion=y_init + P_r + y_revised`
+2. Revision：`prompt=x + y_init + P_r`，`completion=y_revised`
 
-### `src/phase1_srt/`
-放 Phase1 契约与 trace schema：
-- `src/phase1_srt/constants.py`
-- `src/phase1_srt/trace_schema.py`
+两个任务在同一个 dataset 中打乱训练，避免顺序 Stage2 覆盖 generator 能力。
 
-### `src/phase2_distill/`
-放 Phase2 蒸馏实现：
-- `src/phase2_distill/teacher_conditioning.py`
-- `src/phase2_distill/reward_adapter.py`
-- `src/phase2_distill/dataset_io.py`
-- `src/phase2_distill/train_distill_kl.py`
+## 4. Verifier 约束
 
-### `scripts/sft/`
-- `scripts/sft/filter_sft_by_length.py`
-- `scripts/sft/train_sft.py`
-- `scripts/sft/run_sft_8xa100.sh`
-- `scripts/sft/run_sft_smoke.sh`
+- SQLite 以只读和 `query_only` 模式打开。
+- 无顶层 `ORDER BY` 时按多重集合比较，避免任意返回顺序造成假阴性。
+- 有顶层 `ORDER BY` 时保留顺序敏感性。
+- SQL 提取保留最外层 `SELECT/WITH`、嵌套子查询以及字符串内部的分号。
+- BIRD 最终结果仍以官方 evaluator 为准；训练 verifier 与官方 evaluator 的差异应抽样审计。
 
-### `scripts/srt/`
-- `scripts/srt/generate_phase1_traces.py`
-- `scripts/srt/build_two_stage_data.py`
-- `scripts/srt/train_srt_stage.py`
-- `scripts/srt/run_two_stage_8xa100.sh`
-- `scripts/srt/run_generate_traces_vllm_4gpu.sh`
-- `scripts/srt/run_generate_traces_vllm_shard.sh`
+## 5. 训练前验收门槛
 
-### `scripts/distill/`
-- `scripts/distill/run_phase2_distill.sh`
+以下任一项不满足时，不应开始昂贵的 Phase1 训练：
 
-### `scripts/archive/`
-- `scripts/archive/legacy_build_srt_training_data.py`
-- `scripts/archive/legacy_run_qwen3_4b_srt_8xa100.sh`
+- merged SQL-SFT 模型可被 vLLM 独立加载。
+- SQL-SFT 在同一 BIRD dev 评测入口上明显优于裸模型。
+- `prompt_overflow_count` 已解释，训练数据不会截掉 completion。
+- 至少存在足量的错误初答成功修订，且覆盖多个数据库和难度层级。
+- 随机人工核验 verifier 正例/负例，未发现系统性子查询截断或顺序误判。
+- generation/revision 任务数相等，train/valid 问题 ID 不重叠。
 
-### `configs/distill/`
-- `configs/distill/sql_distill.yaml`
+## 6. 完成度边界
 
-### `data/srt/`
-- 正式 trace / stage data 仍放在 `data/srt/`
-- smoke 产物归到 `data/srt/smoke/`
-
----
-
-## 3. 官方仓库到当前实现的映射
-
-| 官方 SD-Zero | 作用 | `sd-zero-sql` 对应实现 |
-|---|---|---|
-| `self-revision-training/self_critique_pipeline.py` | 采样 `D_revision` | `scripts/srt/generate_phase1_traces.py` |
-| `self-revision-training/prepare_data.py` | 构造 Stage1 / Stage2 SFT 数据 | `scripts/srt/build_two_stage_data.py` |
-| `scripts/sft.sh` | 两阶段顺序训练 | `scripts/srt/run_two_stage_8xa100.sh` |
-| `self-revision-training/sft/sft.py` | SRT 训练入口 | `scripts/srt/train_srt_stage.py` |
-| `scripts/distill.sh` | Phase2 distillation 入口 | `scripts/distill/run_phase2_distill.sh` |
-| `examples/run_distillation.py` | teacher/student KL 蒸馏主循环 | `src/phase2_distill/train_distill_kl.py` |
-
----
-
-## 4. SQL 版 Phase1 标准实现
-
-### Stage 1
-- prompt = `x`
-- completion = `y_init + P_r + y_revised`
-
-### Stage 2
-- prompt = `x + y_init + P_r`
-- completion = `y_revised`
-
-其中：
-- `x` 固定为 `build_base_sql_prompt(sample)` 的结果
-- `P_r` 使用稳定 phrasing：
-  - `r = 1`: `Let me rephrase the above solution.`
-  - `r = 0`: `Wait, this response is wrong. Let me correct it.`
-
-当前 canonical trace 契约由：
-- `src/phase1_srt/constants.py`
-- `src/phase1_srt/trace_schema.py`
-
-统一维护。
-
-当前 Phase1 主线文件：
-- `scripts/srt/generate_phase1_traces.py`
-- `scripts/srt/build_two_stage_data.py`
-- `scripts/srt/train_srt_stage.py`
-- `scripts/srt/run_two_stage_8xa100.sh`
-
-旧 mixed 路线：
-- 已归档到 `scripts/archive/`
-- 不再作为默认主线
-
----
-
-## 5. SQL 版 Phase2 当前实现
-
-### 当前 teacher conditioning
-当前 Phase2 采用 SQL 特化版 teacher 输入：
-
-```text
-x
-
-y_init
-
-reward + feedback
-
-P_r
-
-[target SQL span]
-```
-
-其中 feedback 来自 verifier：
-- `error_type`
-- `error_message`
-- `pred_result_preview`
-- `gold_result_preview`
-
-### 当前最小可行训练闭环
-当前 `src/phase2_distill/train_distill_kl.py` 已实现：
-- student rollout
-- SQL verifier reward
-- feedback-conditioned teacher prompt
-- token target 对齐
-- token-level forward KL
-- checkpoint / metrics / debug manifest 落盘
-
-### 当前限制
-为保持第一版简单稳定，暂未实现：
-- top-k teacher logits
-- reverse / mixed KL
-- 多卡 distillation
-- 高吞吐在线 rollout scheduler
-
----
-
-## 6. 当前推荐主线
-
-### Baseline SFT
-- `scripts/sft/filter_sft_by_length.py`
-- `scripts/sft/train_sft.py`
-- `scripts/sft/run_sft_8xa100.sh`
-
-### Phase1 SRT
-- `scripts/srt/generate_phase1_traces.py`
-- `scripts/srt/build_two_stage_data.py`
-- `scripts/srt/run_two_stage_8xa100.sh`
-
-### Phase2 Distill
-- `scripts/distill/run_phase2_distill.sh`
-- `src/phase2_distill/train_distill_kl.py`
-
----
-
-## 7. 兼容与迁移说明
-
-为减少 breakage，旧路径当前仍保留兼容 wrapper：
-- `scripts/generate_srt_traces.py`
-- `scripts/prepare_srt_stage_data.py`
-- `scripts/train_qwen3_4b_srt.py`
-- `scripts/run_qwen3_4b_srt_two_stage_8xA100.sh`
-- `scripts/run_qwen3_4b_sql_distill.sh`
-- `src/prompts.py`
-- `src/generation.py`
-- `src/sql_output.py`
-- `src/verifier.py`
-- `src/sdzero_sql/*`
-- `src/distill/*`
-
-新开发应统一使用新的分阶段目录入口。
-
----
-
-## 8. 下一步建议
-
-1. 继续使用新目录主线推进 Phase1 / Phase2
-2. 将后续新增脚本只放入：
-   - `scripts/sft/`
-   - `scripts/srt/`
-   - `scripts/distill/`
-3. 将后续新增 Python 模块只放入：
-   - `src/sql_core/`
-   - `src/phase1_srt/`
-   - `src/phase2_distill/`
-4. 待下游路径全部切换后，再考虑删除兼容 wrapper
+本仓库代码层面的对齐由本地单测、Python 编译和 shell 语法检查覆盖。真实效果完成必须另外具备远端证据：base、SQL-SFT、SRT 在同一 BIRD dev 配置下的分数，轨迹 summary、训练 `data_stats.json`、loss/eval 曲线以及至少一轮错误案例审计。没有这些远端产物时，只能确认实现修复完成，不能声称模型效果已经达到论文水平。

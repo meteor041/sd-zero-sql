@@ -8,7 +8,7 @@ from transformers import AutoTokenizer
 
 DEFAULT_INPUT_TRAIN = Path("/home/pkuccadm/huwenp/emb/lxy/M-Schema/ches_train_sft_train.jsonl")
 DEFAULT_INPUT_VALID = Path("/home/pkuccadm/huwenp/emb/lxy/M-Schema/ches_train_sft_valid.jsonl")
-DEFAULT_OUTPUT_DIR = Path("/home/pkuccadm/huwenp/emb/lxy/sd-zero-sql/data")
+DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parents[2] / "data"
 DEFAULT_MODEL_PATH = "/data/model/Qwen3-4B-Instruct-2507"
 DEFAULT_MAX_LENGTH = 4096
 

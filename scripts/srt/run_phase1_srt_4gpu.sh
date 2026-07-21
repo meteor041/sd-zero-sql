@@ -40,7 +40,7 @@ export TOKENIZERS_PARALLELISM=false
 export NCCL_DEBUG="${NCCL_DEBUG:-WARN}"
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 
-"${PYTHON_BIN}" "${SCRIPT_DIR}/build_two_stage_data.py" \
+"${PYTHON_BIN}" "${SCRIPT_DIR}/build_phase1_multitask_data.py" \
   --input "${TRACE_FILE}" \
   --output-dir "${DATA_DIR}" \
   --prefix "${DATA_PREFIX}" \

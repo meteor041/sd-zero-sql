@@ -2,6 +2,7 @@
 set -euo pipefail
 
 MODEL_PATH="${MODEL_PATH:-/data/huwenp/emb/lxy/sd-zero-sql/outputs/qwen3_4b_sft_merged_8k}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INPUT_JSONL="/home/pkuccadm/huwenp/emb/lxy/M-Schema/ches_train_sft.jsonl"
 OUTPUT_JSONL="${OUTPUT_JSONL:-/data/huwenp/emb/lxy/sd-zero-sql/data/srt/traces_train_full_1init_3revision.jsonl}"
 SUMMARY_JSON="${SUMMARY_JSON:-/data/huwenp/emb/lxy/sd-zero-sql/data/srt/traces_train_full_1init_3revision_summary.json}"
@@ -19,7 +20,7 @@ if [[ ! -f "${MODEL_PATH}/config.json" ]]; then
 fi
 
 # Recommended full-data starting point for 4xA100-40G with num_inits=32.
-${PYTHON_BIN} /home/pkuccadm/huwenp/emb/lxy/sd-zero-sql/scripts/srt/generate_phase1_traces.py \
+${PYTHON_BIN} "${SCRIPT_DIR}/generate_phase1_traces.py" \
   --model-path "${MODEL_PATH}" \
   --input-jsonl "${INPUT_JSONL}" \
   --output-jsonl "${OUTPUT_JSONL}" \
@@ -37,5 +38,4 @@ ${PYTHON_BIN} /home/pkuccadm/huwenp/emb/lxy/sd-zero-sql/scripts/srt/generate_pha
   --num-inits 1 \
   --num-revisions 3 \
   --max-model-len 8192 \
-  --sample-chunk-size 8 \
   --verifier-workers 16

@@ -4,7 +4,9 @@ import sys
 from pathlib import Path
 from typing import Dict, List
 
-PROJECT_ROOT = Path('/home/pkuccadm/huwenp/emb/lxy/sd-zero-sql')
+from transformers import AutoTokenizer
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SRC_ROOT = PROJECT_ROOT / 'src'
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
@@ -14,6 +16,7 @@ from sql_core.prompt_builders import build_base_sql_prompt
 DEFAULT_INPUT_JSON = Path('/data/huwenp/emb/data/ches/dev.json')
 DEFAULT_TABLES_JSON = Path('/data/huwenp/emb/data/ches/dev_tables.json')
 DEFAULT_OUTPUT_JSON = PROJECT_ROOT / 'data' / 'eval' / 'ches_dev_input_seq.json'
+DEFAULT_MODEL_PATH = '/data/huwenp/emb/lxy/sd-zero-sql/outputs/qwen3_4b_srt_joint/merged'
 
 
 def parse_args() -> argparse.Namespace:
@@ -21,6 +24,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--input-json', type=Path, default=DEFAULT_INPUT_JSON)
     parser.add_argument('--tables-json', type=Path, default=DEFAULT_TABLES_JSON)
     parser.add_argument('--output-json', type=Path, default=DEFAULT_OUTPUT_JSON)
+    parser.add_argument('--model-path', type=str, default=DEFAULT_MODEL_PATH)
     return parser.parse_args()
 
 
@@ -74,6 +78,7 @@ def main() -> None:
     raw_rows = load_json(args.input_json)
     tables_rows = load_json(args.tables_json)
     schema_index = build_schema_index(tables_rows)
+    tokenizer = AutoTokenizer.from_pretrained(args.model_path, use_fast=True)
 
     output_rows = []
     for idx, row in enumerate(raw_rows):
@@ -92,7 +97,7 @@ def main() -> None:
                 'evidence': row.get('evidence', ''),
                 'schema': sample['schema'],
                 'SQL': row.get('SQL', ''),
-                'input_seq': build_base_sql_prompt(sample),
+                'input_seq': build_base_sql_prompt(sample, tokenizer=tokenizer),
             }
         )
 

@@ -4,8 +4,8 @@ set -euo pipefail
 STUDENT_MODEL="${STUDENT_MODEL:-/data/model/Qwen3-4B-Instruct-2507}"
 TEACHER_MODEL="${TEACHER_MODEL:-/data/model/Qwen3-4B-Instruct-2507}"
 INPUT_JSONL="${INPUT_JSONL:-/home/pkuccadm/huwenp/emb/lxy/sd-zero-sql/data/ches_train_sft_train_4k.jsonl}"
-OUTPUT_DIR="${OUTPUT_DIR:-/home/pkuccadm/huwenp/emb/lxy/sd-zero-sql/outputs/sql_distill_smoke}"
-DEBUG_MANIFEST="${DEBUG_MANIFEST:-/home/pkuccadm/huwenp/emb/lxy/sd-zero-sql/data/distill/sql_distill_debug_manifest.jsonl}"
+OUTPUT_DIR="${OUTPUT_DIR:-/data/huwenp/emb/lxy/sd-zero-sql/outputs/sql_distill_smoke}"
+DEBUG_MANIFEST="${DEBUG_MANIFEST:-/data/huwenp/emb/lxy/sd-zero-sql/data/distill/sql_distill_debug_manifest.jsonl}"
 
 export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
 export TOKENIZERS_PARALLELISM=false

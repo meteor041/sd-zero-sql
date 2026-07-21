@@ -70,7 +70,7 @@ def _stage2_record(record: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def prepare_srt_stage_data(input_path: Path, output_dir: Path, stage2_size: int, seed: int, prefix: str) -> Tuple[Path, Path, Dict[str, Any]]:
+def prepare_srt_stage_data(input_path: Path, output_dir: Path, stage2_size: int, seed: int, prefix: str, min_stage1_size: int = 0) -> Tuple[Path, Path, Dict[str, Any]]:
     records = _dedupe_and_filter(load_jsonl(input_path))
     if not records:
         raise ValueError('No usable revision tuples (keep=True and y_revised_correct=True) were found.')
@@ -87,6 +87,11 @@ def prepare_srt_stage_data(input_path: Path, output_dir: Path, stage2_size: int,
     stage2_src = correct_init[:n_correct_s2] + incorrect_init[:n_incorrect_s2]
     rng.shuffle(stage2_src)
     stage1_src = incorrect_init[n_incorrect_s2:]
+
+    if len(stage1_src) < min_stage1_size:
+        backfill_needed = min_stage1_size - len(stage1_src)
+        correct_pool = correct_init[n_correct_s2:]
+        stage1_src.extend(correct_pool[:backfill_needed])
 
     if not stage1_src:
         raise ValueError('Stage 1 would be empty. Collect more incorrect-init successful traces or lower stage2_size.')
@@ -113,6 +118,7 @@ def prepare_srt_stage_data(input_path: Path, output_dir: Path, stage2_size: int,
         'incorrect_init_count': len(incorrect_init),
         'correct_init_count': len(correct_init),
         'stage1_count': len(stage1),
+        'stage1_min_requested': min_stage1_size,
         'stage2_count': len(stage2),
         'stage2_incorrect_count': n_incorrect_s2,
         'stage2_correct_count': n_correct_s2,
@@ -128,6 +134,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--input', type=Path, default=DEFAULT_TRACE_JSONL)
     parser.add_argument('--output-dir', type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument('--stage2-size', type=int, default=1000)
+    parser.add_argument('--min-stage1-size', type=int, default=0)
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--prefix', type=str, default=DEFAULT_PREFIX)
     return parser.parse_args()
@@ -141,6 +148,7 @@ def main() -> None:
         stage2_size=args.stage2_size,
         seed=args.seed,
         prefix=args.prefix,
+        min_stage1_size=args.min_stage1_size,
     )
     summary_path = args.output_dir / f'{args.prefix}_stage_summary.json'
     with open(summary_path, 'w', encoding='utf-8') as f:

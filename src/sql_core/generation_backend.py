@@ -59,6 +59,10 @@ class VLLMGenerator:
     def __init__(self, model_path: str, tensor_parallel_size: int = 1, gpu_memory_utilization: float = 0.9):
         if LLM is None or SamplingParams is None:
             raise ImportError('vllm is not installed in the current environment.')
+        self.tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=True)
+        if self.tokenizer.pad_token is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
+            self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
         self.llm = LLM(
             model=model_path,
             dtype='bfloat16',

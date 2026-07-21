@@ -1,19 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-MODEL_PATH="/data/model/Qwen3-4B-Instruct-2507"
-INPUT_JSONL="/home/pkuccadm/huwenp/emb/lxy/M-Schema/ches_train_sft.jsonl"
-OUTPUT_JSONL="/data/huwenp/emb/lxy/sd-zero-sql/data/srt/traces_train_1k_stratified_vllm.jsonl"
-SUMMARY_JSON="/data/huwenp/emb/lxy/sd-zero-sql/data/srt/traces_train_1k_stratified_vllm_summary.json"
+MODEL_PATH="${MODEL_PATH:-/data/model/Qwen3-4B-Instruct-2507}"
+INPUT_JSONL="${INPUT_JSONL:-/home/pkuccadm/huwenp/emb/lxy/M-Schema/ches_train_sft.jsonl}"
+OUTPUT_JSONL="${OUTPUT_JSONL:-/data/huwenp/emb/lxy/sd-zero-sql/data/srt/traces_train_full_32init_feedbackfix.jsonl}"
+SUMMARY_JSON="${SUMMARY_JSON:-/data/huwenp/emb/lxy/sd-zero-sql/data/srt/traces_train_full_32init_feedbackfix_summary.json}"
 
-# Default to 4 GPUs when they are free. Override externally if needed.
-export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3}
+export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-4,5,6,7}
 export TOKENIZERS_PARALLELISM=false
 export PYTORCH_CUDA_ALLOC_CONF=${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}
 
-PYTHON_BIN=${PYTHON_BIN:-/home/pkuccadm/anaconda3/bin/python}
+PYTHON_BIN=${PYTHON_BIN:-/home/pkuccadm/anaconda3/envs/vllm310/bin/python}
 
-# Recommended full-data starting point for 4xA100-40G with num_inits=32.
 ${PYTHON_BIN} /home/pkuccadm/huwenp/emb/lxy/sd-zero-sql/scripts/srt/generate_phase1_traces.py \
   --model-path "${MODEL_PATH}" \
   --input-jsonl "${INPUT_JSONL}" \
@@ -27,7 +25,7 @@ ${PYTHON_BIN} /home/pkuccadm/huwenp/emb/lxy/sd-zero-sql/scripts/srt/generate_pha
   --gpu-memory-utilization 0.90 \
   --batch-size 8 \
   --max-new-tokens 256 \
-  --temperature 0.7 \
+  --temperature 0.8 \
   --num-inits 32 \
   --sample-chunk-size 8 \
   --verifier-workers 16

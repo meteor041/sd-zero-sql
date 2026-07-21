@@ -3,8 +3,8 @@ set -euo pipefail
 
 MODEL_PATH="${MODEL_PATH:-/data/model/Qwen3-4B-Instruct-2507}"
 INPUT_JSONL="${INPUT_JSONL:-/home/pkuccadm/huwenp/emb/lxy/sd-zero-sql/data/ches_train_sft_train_4k.jsonl}"
-OUTPUT_JSONL="${OUTPUT_JSONL:-/home/pkuccadm/huwenp/emb/lxy/sd-zero-sql/data/srt/traces_train_shard_vllm.jsonl}"
-SUMMARY_JSON="${SUMMARY_JSON:-/home/pkuccadm/huwenp/emb/lxy/sd-zero-sql/data/srt/traces_train_shard_vllm_summary.json}"
+OUTPUT_JSONL="${OUTPUT_JSONL:-/data/huwenp/emb/lxy/sd-zero-sql/data/srt/traces_train_shard_vllm.jsonl}"
+SUMMARY_JSON="${SUMMARY_JSON:-/data/huwenp/emb/lxy/sd-zero-sql/data/srt/traces_train_shard_vllm_summary.json}"
 
 MAX_SAMPLES="${MAX_SAMPLES:-100}"
 NUM_INITS="${NUM_INITS:-4}"
@@ -42,5 +42,6 @@ ${PYTHON_BIN} /home/pkuccadm/huwenp/emb/lxy/sd-zero-sql/scripts/srt/generate_pha
   --temperature "${TEMPERATURE}" \
   --num-inits "${NUM_INITS}" \
   --sample-chunk-size "${SAMPLE_CHUNK_SIZE}" \
+  --verifier-workers 16 \
   --num-shards "${NUM_SHARDS}" \
   --shard-index "${SHARD_INDEX}"

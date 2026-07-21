@@ -4,7 +4,7 @@ set -euo pipefail
 MODEL_PATH="/data/model/Qwen3-4B-Instruct-2507"
 TRAIN_FILE="/home/pkuccadm/huwenp/emb/lxy/sd-zero-sql/data/ches_train_sft_train_4k.jsonl"
 VALID_FILE="/home/pkuccadm/huwenp/emb/lxy/sd-zero-sql/data/ches_train_sft_valid_4k.jsonl"
-OUTPUT_DIR="/home/pkuccadm/huwenp/emb/lxy/sd-zero-sql/outputs/qwen3_4b_sft_smoke"
+OUTPUT_DIR="/data/huwenp/emb/lxy/sd-zero-sql/outputs/qwen3_4b_sft_smoke"
 
 # 默认只用当前空闲的 3 张卡，避免与他人任务冲突
 export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-5,6,7}

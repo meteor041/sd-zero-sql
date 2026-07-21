@@ -21,7 +21,7 @@ from sql_core.sql_normalizer import normalize_sql_output
 from sql_core.sql_verifier import prepare_gold_execution, verify_sql, verify_sql_against_gold
 
 DEFAULT_MODEL_PATH = '/data/model/Qwen3-4B-Instruct-2507'
-DEFAULT_INPUT_JSONL = PROJECT_ROOT / 'data' / 'ches_train_sft_train_4k.jsonl'
+DEFAULT_INPUT_JSONL = Path('/home/pkuccadm/huwenp/emb/lxy/M-Schema/ches_train_sft.jsonl')
 DEFAULT_OUTPUT_JSONL = PROJECT_ROOT / 'data' / 'srt' / 'traces_train_smoke.jsonl'
 DEFAULT_SUMMARY_JSON = PROJECT_ROOT / 'data' / 'srt' / 'traces_train_smoke_summary.json'
 
@@ -32,11 +32,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--input-jsonl', type=Path, default=DEFAULT_INPUT_JSONL)
     parser.add_argument('--output-jsonl', type=Path, default=DEFAULT_OUTPUT_JSONL)
     parser.add_argument('--summary-json', type=Path, default=DEFAULT_SUMMARY_JSON)
-    parser.add_argument('--max-samples', type=int, default=16)
+    parser.add_argument('--max-samples', type=int, default=None)
     parser.add_argument('--max-new-tokens', type=int, default=256)
-    parser.add_argument('--temperature', type=float, default=0.0)
-    parser.add_argument('--num-inits', type=int, default=1)
-    parser.add_argument('--sample-chunk-size', type=int, default=32)
+    parser.add_argument('--temperature', type=float, default=0.7)
+    parser.add_argument('--num-inits', type=int, default=32)
+    parser.add_argument('--sample-chunk-size', type=int, default=8)
     parser.add_argument('--num-shards', type=int, default=1)
     parser.add_argument('--shard-index', type=int, default=0)
     parser.add_argument('--bf16', action='store_true')
@@ -47,7 +47,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--batch-size', type=int, default=8)
     parser.add_argument('--tensor-parallel-size', type=int, default=1)
     parser.add_argument('--gpu-memory-utilization', type=float, default=0.9)
-    parser.add_argument('--verifier-workers', type=int, default=8)
+    parser.add_argument('--verifier-workers', type=int, default=16)
     return parser.parse_args()
 
 
@@ -150,6 +150,12 @@ def init_summary_state(args: argparse.Namespace, selected_count: int, shard_coun
         'current_sample_id': None,
         'current_init_index': None,
         'last_verifier_error_type': None,
+        'prompt_overflow_count': 0,
+        'prompt_overflow_sample_count': 0,
+        'prompt_overflow_init_count': 0,
+        'prompt_overflow_revision_count': 0,
+        'prompt_max_observed_token_length': 0,
+        'prompt_overflow_examples': [],
     }
 
 
@@ -199,6 +205,12 @@ def materialize_summary(state: Dict[str, Any]) -> Dict[str, Any]:
         'current_sample_id': state.get('current_sample_id'),
         'current_init_index': state.get('current_init_index'),
         'last_verifier_error_type': state.get('last_verifier_error_type'),
+        'prompt_overflow_count': state.get('prompt_overflow_count', 0),
+        'prompt_overflow_sample_count': state.get('prompt_overflow_sample_count', 0),
+        'prompt_overflow_init_count': state.get('prompt_overflow_init_count', 0),
+        'prompt_overflow_revision_count': state.get('prompt_overflow_revision_count', 0),
+        'prompt_max_observed_token_length': state.get('prompt_max_observed_token_length', 0),
+        'prompt_overflow_examples': state.get('prompt_overflow_examples', []),
         'error': state.get('error'),
     }
 
@@ -288,15 +300,55 @@ def reset_stage_output(path: Path) -> None:
         pass
 
 
-def generate_init_candidates(samples: List[Dict], generator, batch_size: int, max_new_tokens: int, temperature: float, num_inits: int) -> List[Dict]:
-    prompts = [build_base_sql_prompt(sample) for sample in samples]
+def row_belongs_to_shard(global_index: int, num_shards: int, shard_index: int) -> bool:
+    if num_shards < 1:
+        raise ValueError('num_shards must be >= 1')
+    if shard_index < 0 or shard_index >= num_shards:
+        raise ValueError(f'shard_index must be in [0, {num_shards - 1}]')
+    return global_index % num_shards == shard_index
+
+
+def record_prompt_overflow(state: Dict[str, Any], sample: Dict[str, Any], prompt_token_length: int, stage: str, init_index: int | None = None) -> None:
+    state['prompt_overflow_count'] += 1
+    state['prompt_max_observed_token_length'] = max(state.get('prompt_max_observed_token_length', 0), prompt_token_length)
+    if stage == 'init':
+        state['prompt_overflow_sample_count'] += 1
+        state['prompt_overflow_init_count'] += 1
+    elif stage == 'revision':
+        state['prompt_overflow_revision_count'] += 1
+    examples = state.setdefault('prompt_overflow_examples', [])
+    if len(examples) < 20:
+        examples.append(
+            {
+                'id': sample.get('id'),
+                'db_id': sample.get('db_id'),
+                'stage': stage,
+                'init_index': init_index,
+                'prompt_token_length': prompt_token_length,
+            }
+        )
+
+
+def generate_init_candidates(samples: List[Dict], generator, batch_size: int, max_new_tokens: int, temperature: float, num_inits: int, state: Dict[str, Any]) -> List[Dict]:
+    safe_samples = []
+    safe_prompts = []
+    for sample in samples:
+        prompt = build_base_sql_prompt(sample)
+        prompt_token_length = len(generator.tokenizer(prompt, add_special_tokens=False)['input_ids'])
+        state['prompt_max_observed_token_length'] = max(state.get('prompt_max_observed_token_length', 0), prompt_token_length)
+        if prompt_token_length > 8192:
+            record_prompt_overflow(state, sample, prompt_token_length, stage='init')
+            continue
+        safe_samples.append(sample)
+        safe_prompts.append(prompt)
+
     raw_outputs = []
-    for start in range(0, len(prompts), batch_size):
-        batch_prompts = prompts[start:start + batch_size]
+    for start in range(0, len(safe_prompts), batch_size):
+        batch_prompts = safe_prompts[start:start + batch_size]
         raw_outputs.extend(generator.generate_batch(batch_prompts, max_new_tokens, temperature, num_return_sequences=num_inits))
 
     stage_rows = []
-    for sample, prompt, output_start in zip(samples, prompts, range(0, len(raw_outputs), num_inits)):
+    for sample, prompt, output_start in zip(safe_samples, safe_prompts, range(0, len(raw_outputs), num_inits)):
         prepared_gold = prepare_gold_execution(sample['db_id'], sample['gold_sql'])
         for init_index, raw_y_init in enumerate(raw_outputs[output_start:output_start + num_inits]):
             y_init = normalize_sql_output(raw_y_init)
@@ -379,11 +431,18 @@ def verify_stage_rows_parallel(
                 write_summary(summary_path, state)
 
 
-def generate_revised_candidates(stage_rows: List[Dict[str, Any]], generator, batch_size: int, max_new_tokens: int, temperature: float) -> None:
+def generate_revised_candidates(stage_rows: List[Dict[str, Any]], generator, batch_size: int, max_new_tokens: int, temperature: float, state: Dict[str, Any]) -> None:
+    safe_rows = []
     revision_prompts = []
     for row in stage_rows:
         revision_prompt = build_revision_prompt(row['sample'], row['y_init'], row['verifier_init'])
+        prompt_token_length = len(generator.tokenizer(revision_prompt, add_special_tokens=False)['input_ids'])
+        state['prompt_max_observed_token_length'] = max(state.get('prompt_max_observed_token_length', 0), prompt_token_length)
+        if prompt_token_length > 8192:
+            record_prompt_overflow(state, row['sample'], prompt_token_length, stage='revision', init_index=row['init_index'])
+            continue
         row['revision_prompt'] = revision_prompt
+        safe_rows.append(row)
         revision_prompts.append(revision_prompt)
 
     raw_revision_outputs = []
@@ -391,9 +450,11 @@ def generate_revised_candidates(stage_rows: List[Dict[str, Any]], generator, bat
         batch_prompts = revision_prompts[start:start + batch_size]
         raw_revision_outputs.extend(generator.generate_batch(batch_prompts, max_new_tokens, temperature))
 
-    for row, raw_y_revised in zip(stage_rows, raw_revision_outputs):
+    for row, raw_y_revised in zip(safe_rows, raw_revision_outputs):
         row['raw_y_revised'] = raw_y_revised
         row['y_revised'] = normalize_sql_output(raw_y_revised)
+
+    stage_rows[:] = safe_rows
 
 
 def finalize_traces(
@@ -471,6 +532,7 @@ def main() -> None:
             args.max_new_tokens,
             args.temperature,
             args.num_inits,
+            state,
         )
         write_stage_rows(stage_output_paths['init_generated'], stage_rows)
         state['processed_sample_count'] = len(samples)
@@ -524,6 +586,7 @@ def main() -> None:
             args.batch_size,
             args.max_new_tokens,
             args.temperature,
+            state,
         )
         write_stage_rows(stage_output_paths['revised_generated'], stage_rows, include_verifier_init=True, include_revised=True)
         write_summary(args.summary_json, state)

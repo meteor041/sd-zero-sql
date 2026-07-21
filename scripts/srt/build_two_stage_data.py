@@ -32,7 +32,9 @@ def load_jsonl(path: Path) -> List[Dict[str, Any]]:
 
 def _question_key(record: Dict[str, Any]) -> str:
     value = record.get("id")
-    return str(value) if value is not None else str(record["x"])
+    if value is not None:
+        return f"{record.get('db_id', '')}::{value}"
+    return f"{record.get('db_id', '')}::{record['x']}"
 
 
 def _dedupe_and_filter(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

@@ -77,9 +77,10 @@ def validate_trace_record(record: Dict[str, Any]) -> None:
         raise ValueError(f'Missing canonical trace fields: {missing}')
 
 
-def dedupe_trace_key(record: Dict[str, Any]) -> Tuple[Any, Any, Any, Any]:
+def dedupe_trace_key(record: Dict[str, Any]) -> Tuple[Any, Any, Any, Any, Any]:
     normalized = normalize_trace_record(record)
     return (
+        normalized.get('db_id'),
         normalized.get('x'),
         normalized.get('y_init'),
         normalized.get('p_r'),

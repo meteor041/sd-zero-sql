@@ -215,6 +215,27 @@ class Phase1TrainingDataTests(unittest.TestCase):
         self.assertEqual(summary["generation_task_count"], summary["revision_task_count"])
         self.assertTrue({row["id"] for row in train_rows}.isdisjoint({row["id"] for row in valid_rows}))
 
+    def test_question_identity_includes_database(self) -> None:
+        first = trace_record("shared-id", False)
+        second = trace_record("shared-id", False)
+        second["db_id"] = "another-db"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            input_path = root / "traces.jsonl"
+            with open(input_path, "w", encoding="utf-8") as handle:
+                handle.write(json.dumps(first) + "\n")
+                handle.write(json.dumps(second) + "\n")
+            _, _, summary = prepare_srt_multitask_data(
+                input_path,
+                root,
+                seed=7,
+                prefix="fixture",
+                validation_fraction=0,
+                max_traces_per_question=3,
+                max_correct_init_ratio=0,
+            )
+        self.assertEqual(summary["unique_question_count"], 2)
+
 
 if __name__ == "__main__":
     unittest.main()

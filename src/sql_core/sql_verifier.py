@@ -1,5 +1,6 @@
 import sqlite3
 import time
+from collections import Counter
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
@@ -54,8 +55,10 @@ def execute_sql(
         return 0
 
     try:
-        conn = sqlite3.connect(str(db_path), timeout=timeout_seconds)
+        db_uri = db_path.resolve().as_uri() + "?mode=ro"
+        conn = sqlite3.connect(db_uri, timeout=timeout_seconds, uri=True)
         conn.execute(f"PRAGMA busy_timeout = {int(timeout_seconds * 1000)}")
+        conn.execute("PRAGMA query_only = ON")
         conn.set_progress_handler(progress_handler, SQLITE_PROGRESS_OPS)
         cursor = conn.cursor()
         cursor.execute(sql)
@@ -137,6 +140,77 @@ def prepare_gold_execution(db_id: str, gold_sql: str) -> Dict[str, Any]:
     }
 
 
+def _has_top_level_order_by(sql: str) -> bool:
+    depth = 0
+    quote = None
+    bracket_quote = False
+    tokens: List[str] = []
+    current: List[str] = []
+
+    def flush_token() -> None:
+        if current:
+            tokens.append("".join(current).upper())
+            current.clear()
+
+    index = 0
+    while index < len(sql):
+        char = sql[index]
+        next_char = sql[index + 1] if index + 1 < len(sql) else ""
+        if bracket_quote:
+            if char == "]":
+                bracket_quote = False
+            index += 1
+            continue
+        if quote:
+            if char == quote:
+                if next_char == quote and quote in {"'", '"'}:
+                    index += 2
+                    continue
+                quote = None
+            index += 1
+            continue
+        if char in {"'", '"', "`"}:
+            flush_token()
+            quote = char
+        elif char == "[":
+            flush_token()
+            bracket_quote = True
+        elif char == "-" and next_char == "-":
+            flush_token()
+            newline = sql.find("\n", index + 2)
+            index = len(sql) if newline == -1 else newline + 1
+            continue
+        elif char == "/" and next_char == "*":
+            flush_token()
+            comment_end = sql.find("*/", index + 2)
+            index = len(sql) if comment_end == -1 else comment_end + 2
+            continue
+        elif char == "(":
+            flush_token()
+            depth += 1
+        elif char == ")":
+            flush_token()
+            depth = max(0, depth - 1)
+        elif depth == 0 and (char.isalnum() or char == "_"):
+            current.append(char)
+        else:
+            flush_token()
+        index += 1
+    flush_token()
+    return any(tokens[i:i + 2] == ["ORDER", "BY"] for i in range(len(tokens) - 1))
+
+
+def results_equal(
+    predicted_rows: List[Tuple[Any, ...]],
+    gold_rows: List[Tuple[Any, ...]],
+    *,
+    order_matters: bool,
+) -> bool:
+    if order_matters:
+        return predicted_rows == gold_rows
+    return Counter(predicted_rows) == Counter(gold_rows)
+
+
 def verify_sql_against_gold(prepared_gold: Dict[str, Any], predicted_sql: str) -> Dict[str, Any]:
     db_path = prepared_gold["db_path"]
     pred = execute_sql(db_path, predicted_sql)
@@ -177,12 +251,14 @@ def verify_sql_against_gold(prepared_gold: Dict[str, Any], predicted_sql: str) -
 
     pred_rows = pred["rows"]
     gold_rows = prepared_gold["gold_rows"]
-    execution_match = pred_rows == gold_rows
+    order_matters = _has_top_level_order_by(prepared_gold["gold_sql"])
+    execution_match = results_equal(pred_rows, gold_rows, order_matters=order_matters)
 
     return {
         "reward": 1 if execution_match else 0,
         "is_executable": True,
         "execution_match": execution_match,
+        "order_matters": order_matters,
         "error_type": "correct" if execution_match else "wrong_result",
         "error_message": "" if execution_match else "Execution result does not match gold SQL result.",
         "pred_result_preview": pred["preview"],

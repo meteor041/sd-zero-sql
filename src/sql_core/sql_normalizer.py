@@ -1,5 +1,4 @@
 import re
-from typing import Optional
 
 
 def extract_xml_answer(text: str) -> str:
@@ -25,12 +24,58 @@ def extract_sql_text(gen: str) -> str:
     return gen.strip()
 
 
-def first_select_sql(text: str) -> str:
+def _first_sql_keyword(text: str) -> int | None:
+    match = re.search(r"\b(?:WITH|SELECT)\b", text, flags=re.IGNORECASE)
+    return match.start() if match else None
+
+
+def _statement_end(text: str) -> int:
+    quote = None
+    bracket_quote = False
+    index = 0
+    while index < len(text):
+        char = text[index]
+        next_char = text[index + 1] if index + 1 < len(text) else ""
+
+        if bracket_quote:
+            if char == "]":
+                bracket_quote = False
+            index += 1
+            continue
+
+        if quote:
+            if char == quote:
+                if next_char == quote and quote in {"'", '"'}:
+                    index += 2
+                    continue
+                quote = None
+            index += 1
+            continue
+
+        if char in {"'", '"', "`"}:
+            quote = char
+        elif char == "[":
+            bracket_quote = True
+        elif char == "-" and next_char == "-":
+            newline = text.find("\n", index + 2)
+            index = len(text) if newline == -1 else newline + 1
+            continue
+        elif char == "/" and next_char == "*":
+            comment_end = text.find("*/", index + 2)
+            index = len(text) if comment_end == -1 else comment_end + 2
+            continue
+        elif char == ";":
+            return index
+        index += 1
+    return len(text)
+
+
+def first_sql_statement(text: str) -> str:
     text = text.strip()
-    select_matches = list(re.finditer(r"\bSELECT\b", text, flags=re.IGNORECASE))
-    if not select_matches:
+    keyword_start = _first_sql_keyword(text)
+    if keyword_start is None:
         return text
-    sql = text[select_matches[-1].start():].strip()
+    sql = text[keyword_start:].strip()
 
     stop_patterns = [
         r"\nSystem:",
@@ -54,10 +99,12 @@ def first_select_sql(text: str) -> str:
     if cut_positions:
         sql = sql[:min(cut_positions)].strip()
 
-    if ";" in sql:
-        sql = sql.split(";", 1)[0].strip()
+    return sql[:_statement_end(sql)].strip()
 
-    return sql
+
+def first_select_sql(text: str) -> str:
+    """Backward-compatible alias for callers using the old function name."""
+    return first_sql_statement(text)
 
 
 def normalize_sql_output(response: str) -> str:
@@ -65,5 +112,5 @@ def normalize_sql_output(response: str) -> str:
         return ""
     sql = extract_sql_text(response)
     if "```sql" in response or "```" in response or "<answer>" in response or "</think>" in response:
-        return first_select_sql(sql)
-    return first_select_sql(sql)
+        return first_sql_statement(sql)
+    return first_sql_statement(sql)

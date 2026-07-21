@@ -1,6 +1,4 @@
-from typing import List, Optional
-
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from typing import List
 
 try:
     from vllm import LLM, SamplingParams
@@ -14,7 +12,10 @@ QWEN_STOP_STRINGS = ["\nSystem:", "\nUser:", "\nAssistant:", "\nHuman:"]
 
 
 class HFGenerator:
-    def __init__(self, model_path: str, use_bf16: bool = False):
+    def __init__(self, model_path: str, use_bf16: bool = False, max_model_len: int = 8192):
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+
+        self.max_model_len = max_model_len
         self.tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=True)
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
@@ -33,7 +34,14 @@ class HFGenerator:
         )
         self.model.eval()
 
-    def generate_batch(self, prompts: List[str], max_new_tokens: int, temperature: float, num_return_sequences: int = 1) -> List[str]:
+    def generate_batch(
+        self,
+        prompts: List[str],
+        max_new_tokens: int,
+        temperature: float,
+        num_return_sequences: int = 1,
+        top_p: float = 1.0,
+    ) -> List[str]:
         outputs = []
         for prompt in prompts:
             inputs = self.tokenizer(prompt, return_tensors='pt').to(self.model.device)
@@ -44,7 +52,7 @@ class HFGenerator:
                 'num_return_sequences': num_return_sequences,
             }
             if temperature > 0:
-                generation_kwargs.update({'do_sample': True, 'temperature': temperature})
+                generation_kwargs.update({'do_sample': True, 'temperature': temperature, 'top_p': top_p})
             else:
                 generation_kwargs.update({'do_sample': False})
             generated = self.model.generate(**inputs, **generation_kwargs)
@@ -56,9 +64,12 @@ class HFGenerator:
 
 
 class VLLMGenerator:
-    def __init__(self, model_path: str, tensor_parallel_size: int = 1, gpu_memory_utilization: float = 0.9):
+    def __init__(self, model_path: str, tensor_parallel_size: int = 1, gpu_memory_utilization: float = 0.9, max_model_len: int = 8192):
+        from transformers import AutoTokenizer
+
         if LLM is None or SamplingParams is None:
             raise ImportError('vllm is not installed in the current environment.')
+        self.max_model_len = max_model_len
         self.tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=True)
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
@@ -70,13 +81,21 @@ class VLLMGenerator:
             trust_remote_code=True,
             gpu_memory_utilization=gpu_memory_utilization,
             disable_custom_all_reduce=True,
-            max_model_len=8192,
+            max_model_len=max_model_len,
             enforce_eager=True,
         )
 
-    def generate_batch(self, prompts: List[str], max_new_tokens: int, temperature: float, num_return_sequences: int = 1) -> List[str]:
+    def generate_batch(
+        self,
+        prompts: List[str],
+        max_new_tokens: int,
+        temperature: float,
+        num_return_sequences: int = 1,
+        top_p: float = 1.0,
+    ) -> List[str]:
         params = SamplingParams(
             temperature=temperature,
+            top_p=top_p,
             max_tokens=max_new_tokens,
             n=num_return_sequences,
             stop=QWEN_STOP_STRINGS,
@@ -96,14 +115,16 @@ def load_generator(
     use_bf16: bool = False,
     tensor_parallel_size: int = 1,
     gpu_memory_utilization: float = 0.9,
+    max_model_len: int = 8192,
 ):
     backend = backend.lower()
     if backend == 'hf':
-        return HFGenerator(model_path=model_path, use_bf16=use_bf16)
+        return HFGenerator(model_path=model_path, use_bf16=use_bf16, max_model_len=max_model_len)
     if backend == 'vllm':
         return VLLMGenerator(
             model_path=model_path,
             tensor_parallel_size=tensor_parallel_size,
             gpu_memory_utilization=gpu_memory_utilization,
+            max_model_len=max_model_len,
         )
     raise ValueError(f'Unsupported backend: {backend}')

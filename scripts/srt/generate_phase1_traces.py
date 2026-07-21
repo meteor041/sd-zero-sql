@@ -9,7 +9,7 @@ from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from typing import Any, Dict, List
 
-PROJECT_ROOT = Path('/home/pkuccadm/huwenp/emb/lxy/sd-zero-sql')
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SRC_ROOT = PROJECT_ROOT / 'src'
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
@@ -35,7 +35,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--max-samples', type=int, default=None)
     parser.add_argument('--max-new-tokens', type=int, default=256)
     parser.add_argument('--temperature', type=float, default=0.7)
-    parser.add_argument('--num-inits', type=int, default=32)
+    parser.add_argument('--top-p', type=float, default=1.0)
+    parser.add_argument('--num-inits', type=int, default=1)
+    parser.add_argument('--num-revisions', type=int, default=3)
     parser.add_argument('--sample-chunk-size', type=int, default=8)
     parser.add_argument('--num-shards', type=int, default=1)
     parser.add_argument('--shard-index', type=int, default=0)
@@ -47,6 +49,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--batch-size', type=int, default=8)
     parser.add_argument('--tensor-parallel-size', type=int, default=1)
     parser.add_argument('--gpu-memory-utilization', type=float, default=0.9)
+    parser.add_argument('--max-model-len', type=int, default=8192)
     parser.add_argument('--verifier-workers', type=int, default=16)
     return parser.parse_args()
 
@@ -131,12 +134,15 @@ def init_summary_state(args: argparse.Namespace, selected_count: int, shard_coun
         'sample_count': shard_count,
         'processed_sample_count': 0,
         'num_inits': args.num_inits,
+        'num_revisions': args.num_revisions,
         'sample_chunk_size': args.sample_chunk_size,
         'num_shards': args.num_shards,
         'shard_index': args.shard_index,
         'batch_size': args.batch_size,
         'temperature': args.temperature,
+        'top_p': args.top_p,
         'max_new_tokens': args.max_new_tokens,
+        'max_model_len': args.max_model_len,
         'verifier_workers': args.verifier_workers,
         'total_traces': 0,
         'init_correct_count': 0,
@@ -183,12 +189,15 @@ def materialize_summary(state: Dict[str, Any]) -> Dict[str, Any]:
         'sample_count': state['sample_count'],
         'processed_sample_count': state['processed_sample_count'],
         'num_inits': state['num_inits'],
+        'num_revisions': state['num_revisions'],
         'sample_chunk_size': state['sample_chunk_size'],
         'num_shards': state['num_shards'],
         'shard_index': state['shard_index'],
         'batch_size': state['batch_size'],
         'temperature': state['temperature'],
+        'top_p': state['top_p'],
         'max_new_tokens': state['max_new_tokens'],
+        'max_model_len': state['max_model_len'],
         'verifier_workers': state.get('verifier_workers'),
         'total_traces': total,
         'init_correct_count': state['init_correct_count'],
@@ -256,6 +265,7 @@ def materialize_stage_row(row: Dict[str, Any], *, include_verifier_init: bool = 
     if include_verifier_init:
         record['verifier_init'] = row.get('verifier_init')
     if include_revised:
+        record['revision_index'] = row.get('revision_index', 0)
         record['revision_prompt'] = row.get('revision_prompt')
         record['raw_y_revised'] = row.get('raw_y_revised')
         record['y_revised'] = row.get('y_revised')
@@ -329,14 +339,14 @@ def record_prompt_overflow(state: Dict[str, Any], sample: Dict[str, Any], prompt
         )
 
 
-def generate_init_candidates(samples: List[Dict], generator, batch_size: int, max_new_tokens: int, temperature: float, num_inits: int, state: Dict[str, Any]) -> List[Dict]:
+def generate_init_candidates(samples: List[Dict], generator, batch_size: int, max_new_tokens: int, temperature: float, top_p: float, num_inits: int, state: Dict[str, Any]) -> List[Dict]:
     safe_samples = []
     safe_prompts = []
     for sample in samples:
-        prompt = build_base_sql_prompt(sample)
+        prompt = build_base_sql_prompt(sample, tokenizer=generator.tokenizer)
         prompt_token_length = len(generator.tokenizer(prompt, add_special_tokens=False)['input_ids'])
         state['prompt_max_observed_token_length'] = max(state.get('prompt_max_observed_token_length', 0), prompt_token_length)
-        if prompt_token_length > 8192:
+        if prompt_token_length + max_new_tokens > generator.max_model_len:
             record_prompt_overflow(state, sample, prompt_token_length, stage='init')
             continue
         safe_samples.append(sample)
@@ -345,7 +355,7 @@ def generate_init_candidates(samples: List[Dict], generator, batch_size: int, ma
     raw_outputs = []
     for start in range(0, len(safe_prompts), batch_size):
         batch_prompts = safe_prompts[start:start + batch_size]
-        raw_outputs.extend(generator.generate_batch(batch_prompts, max_new_tokens, temperature, num_return_sequences=num_inits))
+        raw_outputs.extend(generator.generate_batch(batch_prompts, max_new_tokens, temperature, num_return_sequences=num_inits, top_p=top_p))
 
     stage_rows = []
     for sample, prompt, output_start in zip(safe_samples, safe_prompts, range(0, len(raw_outputs), num_inits)):
@@ -431,14 +441,14 @@ def verify_stage_rows_parallel(
                 write_summary(summary_path, state)
 
 
-def generate_revised_candidates(stage_rows: List[Dict[str, Any]], generator, batch_size: int, max_new_tokens: int, temperature: float, state: Dict[str, Any]) -> None:
+def generate_revised_candidates(stage_rows: List[Dict[str, Any]], generator, batch_size: int, max_new_tokens: int, temperature: float, top_p: float, num_revisions: int, state: Dict[str, Any]) -> None:
     safe_rows = []
     revision_prompts = []
     for row in stage_rows:
-        revision_prompt = build_revision_prompt(row['sample'], row['y_init'], row['verifier_init'])
+        revision_prompt = build_revision_prompt(row['sample'], row['y_init'], row['verifier_init'], tokenizer=generator.tokenizer)
         prompt_token_length = len(generator.tokenizer(revision_prompt, add_special_tokens=False)['input_ids'])
         state['prompt_max_observed_token_length'] = max(state.get('prompt_max_observed_token_length', 0), prompt_token_length)
-        if prompt_token_length > 8192:
+        if prompt_token_length + max_new_tokens > generator.max_model_len:
             record_prompt_overflow(state, row['sample'], prompt_token_length, stage='revision', init_index=row['init_index'])
             continue
         row['revision_prompt'] = revision_prompt
@@ -448,13 +458,18 @@ def generate_revised_candidates(stage_rows: List[Dict[str, Any]], generator, bat
     raw_revision_outputs = []
     for start in range(0, len(revision_prompts), batch_size):
         batch_prompts = revision_prompts[start:start + batch_size]
-        raw_revision_outputs.extend(generator.generate_batch(batch_prompts, max_new_tokens, temperature))
+        raw_revision_outputs.extend(generator.generate_batch(batch_prompts, max_new_tokens, temperature, num_return_sequences=num_revisions, top_p=top_p))
 
-    for row, raw_y_revised in zip(safe_rows, raw_revision_outputs):
-        row['raw_y_revised'] = raw_y_revised
-        row['y_revised'] = normalize_sql_output(raw_y_revised)
+    revised_rows = []
+    for row, output_start in zip(safe_rows, range(0, len(raw_revision_outputs), num_revisions)):
+        for revision_index, raw_y_revised in enumerate(raw_revision_outputs[output_start:output_start + num_revisions]):
+            revised_row = dict(row)
+            revised_row['revision_index'] = revision_index
+            revised_row['raw_y_revised'] = raw_y_revised
+            revised_row['y_revised'] = normalize_sql_output(raw_y_revised)
+            revised_rows.append(revised_row)
 
-    stage_rows[:] = safe_rows
+    stage_rows[:] = revised_rows
 
 
 def finalize_traces(
@@ -490,8 +505,10 @@ def finalize_traces(
             raw_y_revised=row['raw_y_revised'],
             revision_prompt=row['revision_prompt'],
         )
-        trace['trace_id'] = f"{sample['id']}__init{row['init_index']}"
+        revision_index = row.get('revision_index', 0)
+        trace['trace_id'] = f"{sample['id']}__init{row['init_index']}__revision{revision_index}"
         trace['init_index'] = row['init_index']
+        trace['revision_index'] = revision_index
         traces.append(trace)
     return traces
 
@@ -508,6 +525,7 @@ def main() -> None:
         use_bf16=args.bf16,
         tensor_parallel_size=args.tensor_parallel_size,
         gpu_memory_utilization=args.gpu_memory_utilization,
+        max_model_len=args.max_model_len,
     )
 
     args.output_jsonl.parent.mkdir(parents=True, exist_ok=True)
@@ -518,7 +536,8 @@ def main() -> None:
 
     print(
         f'Using backend={args.backend} batch_size={args.batch_size} sample_chunk_size={args.sample_chunk_size} '
-        f'samples={len(samples)} num_inits={args.num_inits} shard={args.shard_index}/{args.num_shards}'
+        f'samples={len(samples)} num_inits={args.num_inits} num_revisions={args.num_revisions} '
+        f'shard={args.shard_index}/{args.num_shards}'
     )
 
     try:
@@ -531,6 +550,7 @@ def main() -> None:
             args.batch_size,
             args.max_new_tokens,
             args.temperature,
+            args.top_p,
             args.num_inits,
             state,
         )
@@ -586,6 +606,8 @@ def main() -> None:
             args.batch_size,
             args.max_new_tokens,
             args.temperature,
+            args.top_p,
+            args.num_revisions,
             state,
         )
         write_stage_rows(stage_output_paths['revised_generated'], stage_rows, include_verifier_init=True, include_revised=True)

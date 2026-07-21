@@ -1,76 +1,62 @@
-from typing import Dict
+from typing import Any, Dict, List
+
+from phase1_srt.constants import select_p_r
 
 SYSTEM_PROMPT = (
     "You are an expert Text-to-SQL model. Given a database schema, evidence, "
     "and a natural language question, generate a valid SQL query. Output only the final SQL query. "
-    "Do not include explanations, markdown, code fences, or reasoning. The output must start with SELECT."
+    "Do not include explanations, markdown, code fences, or reasoning. The output must start with SELECT or WITH."
 )
 
 
-def build_base_sql_prompt(sample: Dict) -> str:
+def build_base_sql_messages(sample: Dict[str, Any]) -> List[Dict[str, str]]:
     schema = (sample.get("schema") or "").strip()
     evidence = (sample.get("evidence") or "").strip()
     question = (sample.get("question") or "").strip()
-    return f"""System:
-{SYSTEM_PROMPT}
-
-User:
-Database schema:
+    user_content = f"""Database schema:
 {schema}
 
 Evidence:
 {evidence}
 
 Question:
-{question}
+{question}"""
+    return [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": user_content},
+    ]
+
+
+def render_chat_prompt(tokenizer, messages: List[Dict[str, str]]) -> str:
+    kwargs = {
+        "tokenize": False,
+        "add_generation_prompt": True,
+    }
+    try:
+        return tokenizer.apply_chat_template(messages, enable_thinking=False, **kwargs)
+    except TypeError:
+        return tokenizer.apply_chat_template(messages, **kwargs)
+
+
+def build_base_sql_prompt(sample: Dict[str, Any], tokenizer=None) -> str:
+    messages = build_base_sql_messages(sample)
+    if tokenizer is not None:
+        return render_chat_prompt(tokenizer, messages)
+    return f"""System:
+{messages[0]['content']}
+
+User:
+{messages[1]['content']}
 
 Assistant:
 """
 
 
-def build_revision_instruction(reward: int) -> str:
-    if reward == 1:
-        return (
-            "The previous SQL is correct. Rewrite it into a clean, canonical, and semantically "
-            "equivalent SQL query. Only output the final SQL query."
-        )
-    return (
-        "The previous SQL is incorrect. Based on the database schema, the draft SQL, and the "
-        "execution feedback, generate a corrected SQL query. Only output the final SQL query."
-    )
+def build_revision_continuation_prompt(base_prompt: str, y_init: str, p_r: str) -> str:
+    return f"{base_prompt}{y_init.strip()}\n\n{p_r}\n\n"
 
 
-def build_revision_prompt(sample: Dict, y_init: str, verifier_result: Dict) -> str:
-    schema = (sample.get("schema") or "").strip()
-    evidence = (sample.get("evidence") or "").strip()
-    question = (sample.get("question") or "").strip()
+def build_revision_prompt(sample: Dict, y_init: str, verifier_result: Dict, tokenizer=None) -> str:
     reward = int(verifier_result.get("reward", 0))
-    error_type = verifier_result.get("error_type", "unknown")
-    instruction = build_revision_instruction(reward)
-    return f"""System:
-{SYSTEM_PROMPT}
-
-User:
-Database schema:
-{schema}
-
-Evidence:
-{evidence}
-
-Question:
-{question}
-
-Draft SQL:
-{y_init}
-
-Verifier reward:
-{reward}
-
-Error type:
-{error_type}
-
-Revision instruction:
-{instruction}
-
-Assistant:
-"""
+    base_prompt = build_base_sql_prompt(sample, tokenizer=tokenizer)
+    return build_revision_continuation_prompt(base_prompt, y_init, select_p_r(reward))

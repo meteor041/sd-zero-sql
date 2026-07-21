@@ -5,12 +5,13 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
-PROJECT_ROOT = Path('/home/pkuccadm/huwenp/emb/lxy/sd-zero-sql')
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SRC_ROOT = PROJECT_ROOT / 'src'
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from phase1_srt.trace_schema import dedupe_trace_key, normalize_trace_record, validate_trace_record
+from sql_core.prompt_builders import build_revision_continuation_prompt
 
 DEFAULT_TRACE_JSONL = PROJECT_ROOT / 'data' / 'srt' / 'traces_train_1k_stratified_vllm.jsonl'
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / 'data' / 'srt'
@@ -59,7 +60,7 @@ def _stage1_record(record: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _stage2_record(record: Dict[str, Any]) -> Dict[str, Any]:
-    prompt = f"{record['x']}\n\n{record['y_init']}\n\n{record['p_r']}"
+    prompt = build_revision_continuation_prompt(record['x'], record['y_init'], record['p_r'])
     completion = record['y_revised']
     return {
         'id': record.get('id'),

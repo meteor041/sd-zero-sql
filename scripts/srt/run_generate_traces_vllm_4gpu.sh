@@ -28,6 +28,9 @@ ${PYTHON_BIN} /home/pkuccadm/huwenp/emb/lxy/sd-zero-sql/scripts/srt/generate_pha
   --batch-size 8 \
   --max-new-tokens 256 \
   --temperature 0.7 \
-  --num-inits 32 \
+  --top-p 1.0 \
+  --num-inits 1 \
+  --num-revisions 3 \
+  --max-model-len 8192 \
   --sample-chunk-size 8 \
   --verifier-workers 16

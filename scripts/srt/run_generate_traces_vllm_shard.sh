@@ -7,15 +7,18 @@ OUTPUT_JSONL="${OUTPUT_JSONL:-/data/huwenp/emb/lxy/sd-zero-sql/data/srt/traces_t
 SUMMARY_JSON="${SUMMARY_JSON:-/data/huwenp/emb/lxy/sd-zero-sql/data/srt/traces_train_shard_vllm_summary.json}"
 
 MAX_SAMPLES="${MAX_SAMPLES:-100}"
-NUM_INITS="${NUM_INITS:-4}"
+NUM_INITS="${NUM_INITS:-1}"
+NUM_REVISIONS="${NUM_REVISIONS:-3}"
 SAMPLE_CHUNK_SIZE="${SAMPLE_CHUNK_SIZE:-16}"
 NUM_SHARDS="${NUM_SHARDS:-1}"
 SHARD_INDEX="${SHARD_INDEX:-0}"
 SEED="${SEED:-42}"
 MIN_PER_DB="${MIN_PER_DB:-5}"
 BATCH_SIZE="${BATCH_SIZE:-16}"
-MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-128}"
+MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-256}"
 TEMPERATURE="${TEMPERATURE:-0.7}"
+TOP_P="${TOP_P:-1.0}"
+MAX_MODEL_LEN="${MAX_MODEL_LEN:-8192}"
 TP_SIZE="${TP_SIZE:-4}"
 GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.90}"
 
@@ -40,7 +43,10 @@ ${PYTHON_BIN} /home/pkuccadm/huwenp/emb/lxy/sd-zero-sql/scripts/srt/generate_pha
   --batch-size "${BATCH_SIZE}" \
   --max-new-tokens "${MAX_NEW_TOKENS}" \
   --temperature "${TEMPERATURE}" \
+  --top-p "${TOP_P}" \
   --num-inits "${NUM_INITS}" \
+  --num-revisions "${NUM_REVISIONS}" \
+  --max-model-len "${MAX_MODEL_LEN}" \
   --sample-chunk-size "${SAMPLE_CHUNK_SIZE}" \
   --verifier-workers 16 \
   --num-shards "${NUM_SHARDS}" \

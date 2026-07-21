@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-STUDENT_MODEL="${STUDENT_MODEL:-/data/model/Qwen3-4B-Instruct-2507}"
-TEACHER_MODEL="${TEACHER_MODEL:-/data/model/Qwen3-4B-Instruct-2507}"
-INPUT_JSONL="${INPUT_JSONL:-/home/pkuccadm/huwenp/emb/lxy/sd-zero-sql/data/ches_train_sft_train_4k.jsonl}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+STUDENT_MODEL="${STUDENT_MODEL:-/data/huwenp/emb/lxy/sd-zero-sql/outputs/qwen3_4b_srt_joint/merged}"
+TEACHER_MODEL="${TEACHER_MODEL:-/data/huwenp/emb/lxy/sd-zero-sql/outputs/qwen3_4b_srt_joint/merged}"
+INPUT_JSONL="${INPUT_JSONL:-/home/pkuccadm/huwenp/emb/lxy/M-Schema/ches_train_sft_train.jsonl}"
 OUTPUT_DIR="${OUTPUT_DIR:-/data/huwenp/emb/lxy/sd-zero-sql/outputs/sql_distill_smoke}"
 DEBUG_MANIFEST="${DEBUG_MANIFEST:-/data/huwenp/emb/lxy/sd-zero-sql/data/distill/sql_distill_debug_manifest.jsonl}"
 
@@ -13,7 +15,7 @@ export PYTORCH_CUDA_ALLOC_CONF=${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:Tr
 
 PYTHON_BIN=${PYTHON_BIN:-/home/pkuccadm/anaconda3/bin/python}
 
-${PYTHON_BIN} /home/pkuccadm/huwenp/emb/lxy/sd-zero-sql/src/phase2_distill/train_distill_kl.py \
+${PYTHON_BIN} "${PROJECT_ROOT}/src/phase2_distill/train_distill_kl.py" \
   --student-model "${STUDENT_MODEL}" \
   --teacher-model "${TEACHER_MODEL}" \
   --input-jsonl "${INPUT_JSONL}" \
@@ -25,7 +27,7 @@ ${PYTHON_BIN} /home/pkuccadm/huwenp/emb/lxy/sd-zero-sql/src/phase2_distill/train
   --rollout-batch-size 2 \
   --num-train-epochs 1 \
   --learning-rate 1e-5 \
-  --max-length 4096 \
+  --max-length 8192 \
   --max-new-tokens 128 \
   --temperature 0.0 \
   --bf16 \

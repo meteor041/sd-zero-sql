@@ -1,29 +1,30 @@
-student_model: /home/pkuccadm/huwenp/emb/lxy/sd-zero-sql/outputs/qwen3_4b_phase1_1k_tp4_full/stage2
-teacher_model: /home/pkuccadm/huwenp/emb/lxy/sd-zero-sql/outputs/qwen3_4b_phase1_1k_tp4_full/stage2
-input_jsonl: /home/pkuccadm/huwenp/emb/lxy/sd-zero-sql/data/ches_train_sft_train_4k.jsonl
-valid_jsonl: /home/pkuccadm/huwenp/emb/lxy/sd-zero-sql/data/ches_train_sft_valid_4k.jsonl
-output_dir: /home/pkuccadm/huwenp/emb/lxy/sd-zero-sql/outputs/sql_distill_phase2_4gpu
+student_model: /data/huwenp/emb/lxy/sd-zero-sql/outputs/qwen3_4b_srt_joint/merged
+teacher_model: /data/huwenp/emb/lxy/sd-zero-sql/outputs/qwen3_4b_srt_joint/merged
+input_jsonl: /home/pkuccadm/huwenp/emb/lxy/M-Schema/ches_train_sft_train.jsonl
+valid_jsonl: /home/pkuccadm/huwenp/emb/lxy/M-Schema/ches_train_sft_valid.jsonl
+output_dir: /data/huwenp/emb/lxy/sd-zero-sql/outputs/sql_distill_phase2_4gpu/adapter
+merged_output_dir: /data/huwenp/emb/lxy/sd-zero-sql/outputs/sql_distill_phase2_4gpu/merged
 debug_manifest: /home/pkuccadm/huwenp/emb/lxy/sd-zero-sql/data/distill/sql_distill_phase2_4gpu_debug_manifest.jsonl
 checkpoint_dir: /home/pkuccadm/huwenp/emb/lxy/sd-zero-sql/outputs/sql_distill_phase2_4gpu_checkpoints
-max_samples: 16
-eval_max_samples: 16
+max_samples: null
+eval_max_samples: 256
 backend: hf
 batch_size: 1
 rollout_batch_size: 1
 num_train_epochs: 1
-learning_rate: 1.0e-5
+learning_rate: 5.0e-6
 save_every_steps: 0
 eval_every_steps: 0
 resume_from_checkpoint: null
-max_length: 4096
-max_new_tokens: 1024
-temperature: 0.0
+max_length: 8192
+max_new_tokens: 256
+temperature: 1.0
 tensor_parallel_size: 1
 gpu_memory_utilization: 0.9
 use_4bit: false
 bf16: true
 gradient_checkpointing: true
 notes:
-  - Default 4-GPU SQL Phase2 configuration using the completed Phase1 Stage2 model for both student and frozen teacher.
+  - Default 4-GPU SQL Phase2 configuration using the merged joint Phase1 SRT model for both student and frozen teacher.
   - Current implementation supports distributed training, rank-safe saving, optional checkpointing, and optional eval on a held-out JSONL.
   - Still a research/experiment-grade implementation: no high-throughput rollout scheduler, no richer KL variants, and no production-grade fault tolerance yet.

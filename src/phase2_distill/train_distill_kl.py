@@ -14,7 +14,7 @@ from peft import LoraConfig, PeftModel, get_peft_model
 from torch.utils.data import DataLoader
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
-PROJECT_ROOT = Path('/home/pkuccadm/huwenp/emb/lxy/sd-zero-sql')
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SRC_ROOT = PROJECT_ROOT / 'src'
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
@@ -24,9 +24,9 @@ from phase2_distill.dataset_io import DEFAULT_TRAIN_FILE, DEFAULT_VALID_FILE, da
 from phase2_distill.teacher_conditioning import build_student_prompt, build_teacher_metadata, build_teacher_prefix
 from sql_core.sql_normalizer import normalize_sql_output
 
-DEFAULT_PHASE1_STAGE2_MODEL = str(PROJECT_ROOT / 'outputs' / 'qwen3_4b_phase1_1k_tp4_full' / 'stage2')
-DEFAULT_STUDENT_MODEL = DEFAULT_PHASE1_STAGE2_MODEL
-DEFAULT_TEACHER_MODEL = DEFAULT_PHASE1_STAGE2_MODEL
+DEFAULT_SRT_MODEL = str(PROJECT_ROOT / 'outputs' / 'qwen3_4b_srt_joint' / 'merged')
+DEFAULT_STUDENT_MODEL = DEFAULT_SRT_MODEL
+DEFAULT_TEACHER_MODEL = DEFAULT_SRT_MODEL
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / 'outputs' / 'sql_distill_phase2_4gpu'
 DEFAULT_DEBUG_FILE = PROJECT_ROOT / 'data' / 'distill' / 'sql_distill_phase2_4gpu_debug_manifest.jsonl'
 DEFAULT_CHECKPOINT_DIR = PROJECT_ROOT / 'outputs' / 'sql_distill_phase2_4gpu_checkpoints'
@@ -52,7 +52,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--output-dir', type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument('--debug-manifest', type=Path, default=DEFAULT_DEBUG_FILE)
     parser.add_argument('--checkpoint-dir', type=Path, default=DEFAULT_CHECKPOINT_DIR)
-    parser.add_argument('--max-samples', type=int, default=16)
+    parser.add_argument('--max-samples', type=int, default=None)
     parser.add_argument('--max-new-tokens', type=int, default=256)
     parser.add_argument('--temperature', type=float, default=0.0)
     parser.add_argument('--backend', type=str, default='hf', choices=['hf'])
@@ -66,7 +66,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--eval-every-steps', type=int, default=0)
     parser.add_argument('--save-every-steps', type=int, default=0)
     parser.add_argument('--resume-from-checkpoint', type=Path, default=None)
-    parser.add_argument('--max-length', type=int, default=4096)
+    parser.add_argument('--max-length', type=int, default=8192)
     parser.add_argument('--lora-r', type=int, default=16)
     parser.add_argument('--lora-alpha', type=int, default=32)
     parser.add_argument('--lora-dropout', type=float, default=0.05)
@@ -97,26 +97,6 @@ def load_tokenizer(model_path: str):
         tokenizer.pad_token_id = tokenizer.eos_token_id
     tokenizer.padding_side = 'left'
     return tokenizer
-
-
-def prompt_to_messages(prompt: str) -> List[Dict[str, str]]:
-    prompt = prompt.strip()
-    system_text = ''
-    user_text = ''
-    if prompt.startswith('System:\n') and '\n\nUser:\n' in prompt:
-        after_system = prompt[len('System:\n'):]
-        system_text, after_user = after_system.split('\n\nUser:\n', 1)
-        if '\n\nAssistant:' in after_user:
-            user_text = after_user.split('\n\nAssistant:', 1)[0]
-        else:
-            user_text = after_user
-    else:
-        user_text = prompt
-    messages = []
-    if system_text.strip():
-        messages.append({'role': 'system', 'content': system_text.strip()})
-    messages.append({'role': 'user', 'content': user_text.strip()})
-    return messages
 
 
 def _load_base_model(model_path: str, use_4bit: bool, use_bf16: bool):
@@ -174,9 +154,15 @@ def load_teacher_model(args: argparse.Namespace):
     return model
 
 
-def build_sequences(sample: Dict, student_response_sql: str, reward: int, verifier_result: Dict) -> Dict[str, str]:
-    student_prompt = build_student_prompt(sample)
-    teacher_prefix = build_teacher_prefix(sample, student_response_sql, reward, verifier_result)
+def build_sequences(sample: Dict, student_response_sql: str, reward: int, verifier_result: Dict, tokenizer) -> Dict[str, str]:
+    student_prompt = build_student_prompt(sample, tokenizer=tokenizer)
+    teacher_prefix = build_teacher_prefix(
+        sample,
+        student_response_sql,
+        reward,
+        verifier_result,
+        tokenizer=tokenizer,
+    )
     return {
         'student_prompt': student_prompt,
         'student_target': student_response_sql,
@@ -190,12 +176,8 @@ def encode_with_target(tokenizer, prompt: str, target: str, max_length: int) -> 
     target_ids = tokenizer(target, add_special_tokens=False).input_ids
     if len(target_ids) == 0:
         raise ValueError('Target tokenization is empty.')
-    if len(target_ids) > max_length:
-        raise ValueError('Target tokenization exceeds max_length.')
-
-    prompt_keep = max_length - len(target_ids)
-    if prompt_keep < len(prompt_ids):
-        prompt_ids = prompt_ids[-prompt_keep:] if prompt_keep > 0 else []
+    if len(prompt_ids) + len(target_ids) > max_length:
+        raise ValueError('Prompt and target exceed max_length; schema truncation is disabled.')
 
     full_ids = torch.tensor(prompt_ids + target_ids, dtype=torch.long)
     attention_mask = torch.ones_like(full_ids, dtype=torch.long)
@@ -282,12 +264,8 @@ def collate_distill_batch(tokenizer, rows: List[Dict], max_length: int) -> Tuple
 def run_rollout(samples: List[Dict], model, tokenizer, max_new_tokens: int, temperature: float, accelerator: Accelerator) -> List[str]:
     model.eval()
     generation_model = accelerator.unwrap_model(model)
-    prompts = [build_student_prompt(sample) for sample in samples]
-    rendered_prompts = [
-        tokenizer.apply_chat_template(prompt_to_messages(prompt), add_generation_prompt=True, tokenize=False)
-        for prompt in prompts
-    ]
-    tokenized = tokenizer(rendered_prompts, return_tensors='pt', padding=True)
+    prompts = [build_student_prompt(sample, tokenizer=tokenizer) for sample in samples]
+    tokenized = tokenizer(prompts, return_tensors='pt', padding=True)
     input_ids = tokenized.input_ids.to(accelerator.device)
     attention_mask = tokenized.attention_mask.to(accelerator.device)
     generation_kwargs = {
@@ -316,12 +294,14 @@ def build_batch_rows(samples: List[Dict], student_outputs: List[str], teacher_mo
             reward_info['normalized_sql'],
             reward_info['reward'],
             reward_info['verifier_result'],
+            tokenizer=tokenizer,
         )
         sequences = build_sequences(
             sample,
             reward_info['normalized_sql'],
             reward_info['reward'],
             reward_info['verifier_result'],
+            tokenizer,
         )
         rows.append(
             {
@@ -349,8 +329,9 @@ def build_batch_rows(samples: List[Dict], student_outputs: List[str], teacher_mo
 
 def compute_forward_kl(student_logits: torch.Tensor, teacher_logits: torch.Tensor, target_mask: torch.Tensor) -> torch.Tensor:
     student_log_probs = F.log_softmax(student_logits, dim=-1)
-    teacher_probs = F.softmax(teacher_logits, dim=-1)
-    token_kl = F.kl_div(student_log_probs, teacher_probs, reduction='none').sum(dim=-1)
+    student_probs = student_log_probs.exp()
+    teacher_log_probs = F.log_softmax(teacher_logits, dim=-1)
+    token_kl = (student_probs * (student_log_probs - teacher_log_probs)).sum(dim=-1)
     masked = token_kl[target_mask]
     if masked.numel() == 0:
         raise ValueError('No valid tokens available for KL computation.')

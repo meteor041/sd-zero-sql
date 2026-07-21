@@ -9,8 +9,7 @@ LOG_DIR="${LOG_DIR:-/data/huwenp/emb/lxy/sd-zero-sql/logs}"
 RUN_TAG="${RUN_TAG:-bird_dev_eval_$(date +%Y%m%d_%H%M%S)}"
 LOG_FILE="${LOG_DIR}/${RUN_TAG}.log"
 
-STAGE1_MODEL_DIR="${STAGE1_MODEL_DIR:-/data/huwenp/emb/lxy/sd-zero-sql/outputs/qwen3_4b_srt_stage1_base_1init_stage1k4_gpu0to3}"
-STAGE2_MODEL_DIR="${STAGE2_MODEL_DIR:-/data/huwenp/emb/lxy/sd-zero-sql/outputs/qwen3_4b_srt_stage2_from_stage1_1init_stage1k4_gpu0to3}"
+SRT_MODEL_DIR="${SRT_MODEL_DIR:-/data/huwenp/emb/lxy/sd-zero-sql/outputs/qwen3_4b_srt_joint/merged}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-/data/huwenp/emb/lxy/sd-zero-sql/outputs/bird_eval}"
 DATA_ROOT="${DATA_ROOT:-/data/huwenp/emb/data/ches}"
 DATAFILE_PATH="${DATAFILE_PATH:-/data/huwenp/emb/data/ches/dev.json}"
@@ -93,9 +92,11 @@ run_eval() {
 }
 
 wait_for_gpus
-run_eval "${STAGE1_MODEL_DIR}" "stage1" "greedy_search" 1 0.0
-run_eval "${STAGE1_MODEL_DIR}" "stage1" "major_voting" 8 0.8
-run_eval "${STAGE2_MODEL_DIR}" "stage2" "greedy_search" 1 0.0
-run_eval "${STAGE2_MODEL_DIR}" "stage2" "major_voting" 8 0.8
+if [[ ! -f "${SRT_MODEL_DIR}/config.json" ]]; then
+  echo "SRT_MODEL_DIR is not a standalone merged model: ${SRT_MODEL_DIR}" >&2
+  exit 1
+fi
+run_eval "${SRT_MODEL_DIR}" "srt" "greedy_search" 1 0.0
+run_eval "${SRT_MODEL_DIR}" "srt" "major_voting" 8 0.7
 
 echo "[done] run_tag=${RUN_TAG} end_time=$(date '+%F %T')"

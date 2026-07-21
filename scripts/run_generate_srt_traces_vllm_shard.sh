@@ -1,3 +1,4 @@
 #!/usr/bin/env bash
 set -euo pipefail
-exec bash "/home/pkuccadm/huwenp/emb/lxy/sd-zero-sql/scripts/srt/run_generate_traces_vllm_shard.sh" "$@"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec bash "${SCRIPT_DIR}/srt/run_generate_traces_vllm_shard.sh" "$@"

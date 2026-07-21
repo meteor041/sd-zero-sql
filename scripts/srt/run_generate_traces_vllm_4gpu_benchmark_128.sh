@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-MODEL_PATH="${MODEL_PATH:-/data/model/Qwen3-4B-Instruct-2507}"
+MODEL_PATH="${MODEL_PATH:-/data/huwenp/emb/lxy/sd-zero-sql/outputs/qwen3_4b_sft_merged_8k}"
 INPUT_JSONL="${INPUT_JSONL:-/home/pkuccadm/huwenp/emb/lxy/M-Schema/ches_train_sft.jsonl}"
-OUTPUT_JSONL="${OUTPUT_JSONL:-/data/huwenp/emb/lxy/sd-zero-sql/data/srt/traces_train_benchmark_128_32init_feedbackfix.jsonl}"
-SUMMARY_JSON="${SUMMARY_JSON:-/data/huwenp/emb/lxy/sd-zero-sql/data/srt/traces_train_benchmark_128_32init_feedbackfix_summary.json}"
+OUTPUT_JSONL="${OUTPUT_JSONL:-/data/huwenp/emb/lxy/sd-zero-sql/data/srt/traces_train_benchmark_128_1init_3revision.jsonl}"
+SUMMARY_JSON="${SUMMARY_JSON:-/data/huwenp/emb/lxy/sd-zero-sql/data/srt/traces_train_benchmark_128_1init_3revision_summary.json}"
 MAX_SAMPLES="${MAX_SAMPLES:-128}"
 
 export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-4,5,6,7}

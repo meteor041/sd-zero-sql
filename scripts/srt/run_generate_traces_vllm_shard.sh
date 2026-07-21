@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-MODEL_PATH="${MODEL_PATH:-/data/model/Qwen3-4B-Instruct-2507}"
-INPUT_JSONL="${INPUT_JSONL:-/home/pkuccadm/huwenp/emb/lxy/sd-zero-sql/data/ches_train_sft_train_4k.jsonl}"
+MODEL_PATH="${MODEL_PATH:-/data/huwenp/emb/lxy/sd-zero-sql/outputs/qwen3_4b_sft_merged_8k}"
+INPUT_JSONL="${INPUT_JSONL:-/home/pkuccadm/huwenp/emb/lxy/M-Schema/ches_train_sft.jsonl}"
 OUTPUT_JSONL="${OUTPUT_JSONL:-/data/huwenp/emb/lxy/sd-zero-sql/data/srt/traces_train_shard_vllm.jsonl}"
 SUMMARY_JSON="${SUMMARY_JSON:-/data/huwenp/emb/lxy/sd-zero-sql/data/srt/traces_train_shard_vllm_summary.json}"
 
@@ -27,6 +27,11 @@ export TOKENIZERS_PARALLELISM=false
 export PYTORCH_CUDA_ALLOC_CONF=${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}
 
 PYTHON_BIN=${PYTHON_BIN:-/home/pkuccadm/anaconda3/envs/vllm310/bin/python}
+
+if [[ ! -f "${MODEL_PATH}/config.json" ]]; then
+  echo "MODEL_PATH must be a standalone SQL-SFT model: ${MODEL_PATH}" >&2
+  exit 1
+fi
 
 ${PYTHON_BIN} /home/pkuccadm/huwenp/emb/lxy/sd-zero-sql/scripts/srt/generate_phase1_traces.py \
   --model-path "${MODEL_PATH}" \

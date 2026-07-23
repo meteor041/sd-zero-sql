@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+MODEL_PATH="${MODEL_PATH:-/data/model/Qwen3-4B-Instruct-2507}"
+INPUT_JSONL="${INPUT_JSONL:-/home/pkuccadm/huwenp/emb/lxy/M-Schema/ches_train_sft.jsonl}"
+OUTPUT_JSONL="${OUTPUT_JSONL:-/data/huwenp/emb/lxy/sd-zero-sql/data/srt/traces_train_full_stage1_8init_3rev_highrecall.jsonl}"
+SUMMARY_JSON="${SUMMARY_JSON:-/data/huwenp/emb/lxy/sd-zero-sql/data/srt/traces_train_full_stage1_8init_3rev_highrecall_summary.json}"
+
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-4,5,6,7}"
+export TOKENIZERS_PARALLELISM=false
+export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
+
+VLLM_PYTHON_BIN="${VLLM_PYTHON_BIN:-/home/pkuccadm/anaconda3/envs/vllm310/bin/python}"
+
+echo "[start] $(date '+%F %T')"
+echo "[config] MODEL_PATH=${MODEL_PATH}"
+echo "[config] INPUT_JSONL=${INPUT_JSONL}"
+echo "[config] OUTPUT_JSONL=${OUTPUT_JSONL}"
+echo "[config] SUMMARY_JSON=${SUMMARY_JSON}"
+echo "[config] CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}"
+
+"${VLLM_PYTHON_BIN}" /home/pkuccadm/huwenp/emb/lxy/sd-zero-sql/scripts/srt/generate_phase1_traces.py \
+  --model-path "${MODEL_PATH}" \
+  --input-jsonl "${INPUT_JSONL}" \
+  --output-jsonl "${OUTPUT_JSONL}" \
+  --summary-json "${SUMMARY_JSON}" \
+  --sampling-mode stratified \
+  --min-per-db 5 \
+  --seed 42 \
+  --backend vllm \
+  --tensor-parallel-size 4 \
+  --gpu-memory-utilization 0.90 \
+  --max-model-len 8192 \
+  --batch-size 8 \
+  --max-new-tokens 256 \
+  --temperature 0.9 \
+  --top-p 1.0 \
+  --num-inits 8 \
+  --num-revisions 3 \
+  --verifier-workers 16
+
+echo "[done] $(date '+%F %T')"

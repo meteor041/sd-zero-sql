@@ -25,7 +25,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--output-dir', type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument('--prefix', type=str, default=DEFAULT_PREFIX)
     parser.add_argument('--seed', type=int, default=42)
-    parser.add_argument('--valid-fraction', type=float, default=0.02)
+    parser.add_argument('--valid-fraction', type=float, default=None)
+    parser.add_argument('--target-valid-count', type=int, default=500)
     return parser.parse_args()
 
 
@@ -101,22 +102,34 @@ def dedupe_records(records: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]],
     return unique, stats
 
 
-def split_by_question(records: List[Dict[str, Any]], valid_fraction: float, seed: int) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+def split_by_db(records: List[Dict[str, Any]], seed: int, valid_fraction: float | None, target_valid_count: int) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[str]]:
     grouped = {}
     for record in records:
-        grouped.setdefault(question_key(record), []).append(record)
-    question_ids = list(grouped.keys())
+        grouped.setdefault(record.get('db_id'), []).append(record)
+    db_ids = list(grouped.keys())
     rng = random.Random(seed)
-    rng.shuffle(question_ids)
-    valid_count = max(1, int(len(question_ids) * valid_fraction)) if question_ids else 0
-    valid_questions = set(question_ids[:valid_count])
-    train, valid = [], []
-    for qid, rows in grouped.items():
-        if qid in valid_questions:
-            valid.extend(rows)
-        else:
-            train.extend(rows)
-    return train, valid
+    rng.shuffle(db_ids)
+
+    valid_db_ids = []
+    valid_rows = []
+    if valid_fraction is not None:
+        target = max(1, int(len(records) * valid_fraction)) if records else 0
+    else:
+        target = target_valid_count
+
+    for db_id in db_ids:
+        if len(valid_rows) >= target and valid_db_ids:
+            break
+        valid_db_ids.append(db_id)
+        valid_rows.extend(grouped[db_id])
+
+    valid_db_set = set(valid_db_ids)
+    train_rows = []
+    for db_id, rows in grouped.items():
+        if db_id in valid_db_set:
+            continue
+        train_rows.extend(rows)
+    return train_rows, valid_rows, valid_db_ids
 
 
 def write_jsonl(path: Path, rows: List[Dict[str, Any]]) -> None:
@@ -142,7 +155,7 @@ def main() -> None:
             sft_records.append(build_sft_record(trace, trace['y_revised'], 'revised'))
 
     deduped, dedupe_stats = dedupe_records(sft_records)
-    train_rows, valid_rows = split_by_question(deduped, args.valid_fraction, args.seed)
+    train_rows, valid_rows, valid_db_ids = split_by_db(deduped, args.seed, args.valid_fraction, args.target_valid_count)
 
     output_dir = args.output_dir
     full_path = output_dir / f'{args.prefix}.jsonl'
@@ -163,6 +176,8 @@ def main() -> None:
         'train_count': len(train_rows),
         'valid_count': len(valid_rows),
         'valid_fraction': args.valid_fraction,
+        'target_valid_count': args.target_valid_count,
+        'valid_db_ids': valid_db_ids,
         'source_init_only': dedupe_stats['source_init_only'],
         'source_revised_only': dedupe_stats['source_revised_only'],
         'source_both': dedupe_stats['source_both'],

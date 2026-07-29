@@ -52,6 +52,19 @@ Despite the historical filename, the launcher defaults to four GPUs so the effec
 
 Evaluate this standalone model before collecting SRT traces. SD-Zero assumes a competent generator; a near-zero SQL baseline cannot produce useful self-corrections.
 
+For a full-parameter SFT run aligned with Table 4 of the paper, install `liger-kernel` and run:
+
+```bash
+GPU_SET=0,1,2,3 bash scripts/sft/run_sft_paper_full_4gpu.sh
+```
+
+This separate launcher uses four-way FSDP `full_shard auto_wrap`, wraps
+`Qwen3DecoderLayer`, enables Liger and gradient checkpointing, trains with completion-only
+loss at sequence length 32768, and uses the paper's `5e-6` learning rate, global batch size
+4, cosine schedule, 5% warmup, and three epochs. Its output is already a standalone model;
+do not run the LoRA merge script on it. Override `MODEL_PATH`, `TRAIN_FILE`, `VALID_FILE`,
+and `OUTPUT_DIR` when the server layout differs.
+
 ### 2. Collect Phase1 traces
 
 ```bash

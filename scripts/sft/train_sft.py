@@ -62,7 +62,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lora-r", type=int, default=16)
     parser.add_argument("--lora-alpha", type=int, default=32)
     parser.add_argument("--lora-dropout", type=float, default=0.05)
+    parser.add_argument("--full-finetune", action="store_true")
     parser.add_argument("--use-4bit", action="store_true")
+    parser.add_argument("--use-liger-kernel", action="store_true")
+    parser.add_argument("--fsdp", type=str, default="")
+    parser.add_argument("--fsdp-transformer-layer-cls-to-wrap", type=str, default="")
     parser.add_argument("--gradient-checkpointing", action="store_true")
     parser.add_argument("--bf16", action="store_true")
     parser.add_argument("--report-to", type=str, default="none")
@@ -125,6 +129,12 @@ def tokenize_sft_dataset(
 
 def main() -> None:
     args = parse_args()
+    if args.full_finetune and args.use_4bit:
+        raise ValueError("--full-finetune cannot be combined with --use-4bit")
+    if args.fsdp and not args.full_finetune:
+        raise ValueError("--fsdp requires --full-finetune")
+    if args.fsdp and not args.fsdp_transformer_layer_cls_to_wrap:
+        raise ValueError("--fsdp requires --fsdp-transformer-layer-cls-to-wrap")
     os.makedirs(args.output_dir, exist_ok=True)
     tokenizer = AutoTokenizer.from_pretrained(args.model_path, use_fast=True)
     if tokenizer.pad_token is None:
@@ -155,25 +165,34 @@ def main() -> None:
         if hasattr(base_model, "enable_input_require_grads"):
             base_model.enable_input_require_grads()
 
-    model = get_peft_model(
-        base_model,
-        LoraConfig(
-            r=args.lora_r,
-            lora_alpha=args.lora_alpha,
-            lora_dropout=args.lora_dropout,
-            bias="none",
-            task_type="CAUSAL_LM",
-            target_modules=[
-                "q_proj",
-                "k_proj",
-                "v_proj",
-                "o_proj",
-                "gate_proj",
-                "up_proj",
-                "down_proj",
-            ],
-        ),
-    )
+    if args.full_finetune:
+        model = base_model
+    else:
+        model = get_peft_model(
+            base_model,
+            LoraConfig(
+                r=args.lora_r,
+                lora_alpha=args.lora_alpha,
+                lora_dropout=args.lora_dropout,
+                bias="none",
+                task_type="CAUSAL_LM",
+                target_modules=[
+                    "q_proj",
+                    "k_proj",
+                    "v_proj",
+                    "o_proj",
+                    "gate_proj",
+                    "up_proj",
+                    "down_proj",
+                ],
+            ),
+        )
+
+    fsdp_config = None
+    if args.fsdp:
+        fsdp_config = {
+            "transformer_layer_cls_to_wrap": args.fsdp_transformer_layer_cls_to_wrap,
+        }
     training_args = TrainingArguments(
         output_dir=args.output_dir,
         num_train_epochs=args.num_train_epochs,
@@ -202,6 +221,9 @@ def main() -> None:
         dataloader_num_workers=4,
         logging_first_step=True,
         load_best_model_at_end=False,
+        use_liger_kernel=args.use_liger_kernel,
+        fsdp=args.fsdp,
+        fsdp_config=fsdp_config,
     )
     trainer = Trainer(
         model=model,

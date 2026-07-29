@@ -10,7 +10,7 @@ ADAPTER_OUT="${ADAPTER_OUT:-/data/huwenp/emb/lxy/sd-zero-sql/outputs/qwen3_4b_sf
 MERGED_OUT="${MERGED_OUT:-/data/huwenp/emb/lxy/sd-zero-sql/outputs/qwen3_4b_sft_from_phase1_4init_correctsql_dbsplit/merged}"
 PYTHON_BIN="${PYTHON_BIN:-/home/pkuccadm/anaconda3/bin/python}"
 ACCELERATE_BIN="${ACCELERATE_BIN:-${PYTHON_BIN} -m accelerate.commands.launch}"
-GPU_SET="${GPU_SET:-0,1,2,3}"
+GPU_SET="${GPU_SET:-4,5,6,7}"
 IFS=',' read -r -a GPU_INDICES <<< "${GPU_SET}"
 NUM_PROCESSES="${NUM_PROCESSES:-4}"
 POLL_SECONDS="${POLL_SECONDS:-180}"
@@ -75,8 +75,8 @@ ${ACCELERATE_BIN} \
   --train-file "${TRAIN_FILE}" \
   --valid-file "${VALID_FILE}" \
   --output-dir "${ADAPTER_OUT}" \
-  --max-length 8192 \
-  --overlength-policy error \
+  --max-length 4096 \
+  --overlength-policy drop \
   --num-train-epochs 3 \
   --learning-rate 1e-4 \
   --weight-decay 1e-4 \

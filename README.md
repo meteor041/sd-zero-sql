@@ -65,6 +65,22 @@ loss at sequence length 32768, and uses the paper's `5e-6` learning rate, global
 do not run the LoRA merge script on it. Override `MODEL_PATH`, `TRAIN_FILE`, `VALID_FILE`,
 and `OUTPUT_DIR` when the server layout differs.
 
+The launcher shows the Hugging Face tqdm progress bar on the main FSDP process and reports
+training/evaluation metrics to Weights & Biases by default. Log in once on the training server
+with `wandb login`, then optionally configure the run:
+
+```bash
+WANDB_PROJECT=sd-zero-sql \
+WANDB_ENTITY=your-team \
+WANDB_RUN_NAME=qwen3-4b-full-sft-v1 \
+WANDB_MODE=online \
+bash scripts/sft/run_sft_paper_full_4gpu.sh
+```
+
+Use `WANDB_MODE=offline` without network access, or `REPORT_TO=none` to disable wandb.
+The launcher disables parameter/gradient watching and checkpoint uploads by default to avoid
+the substantial overhead of logging a full-parameter 4B model.
+
 ### 2. Collect Phase1 traces
 
 ```bash

@@ -35,6 +35,15 @@ class PaperFullSftLauncherTests(unittest.TestCase):
         self.assertIn('NUM_PROCESSES="${NUM_PROCESSES:-4}"', script)
         self.assertIn('if [[ "${NUM_PROCESSES}" != "4" ]]', script)
 
+    def test_launcher_enables_progress_and_wandb_reporting(self) -> None:
+        script = LAUNCHER.read_text(encoding="utf-8")
+        self.assertIn('REPORT_TO="${REPORT_TO:-wandb}"', script)
+        self.assertIn('WANDB_PROJECT="${WANDB_PROJECT:-sd-zero-sql}"', script)
+        self.assertIn('WANDB_MODE="${WANDB_MODE:-online}"', script)
+        self.assertIn('--report-to "${REPORT_TO}"', script)
+        self.assertIn('--run-name "${WANDB_RUN_NAME}"', script)
+        self.assertNotIn("--disable-progress-bar", script)
+
 
 if __name__ == "__main__":
     unittest.main()

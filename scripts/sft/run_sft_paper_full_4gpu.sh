@@ -10,6 +10,11 @@ PYTHON_BIN="${PYTHON_BIN:-/home/pkuccadm/anaconda3/bin/python}"
 ACCELERATE_BIN="${ACCELERATE_BIN:-${PYTHON_BIN} -m accelerate.commands.launch}"
 GPU_SET="${GPU_SET:-0,1,2,3}"
 NUM_PROCESSES="${NUM_PROCESSES:-4}"
+REPORT_TO="${REPORT_TO:-wandb}"
+WANDB_PROJECT="${WANDB_PROJECT:-sd-zero-sql}"
+WANDB_ENTITY="${WANDB_ENTITY:-}"
+WANDB_RUN_NAME="${WANDB_RUN_NAME:-qwen3-4b-paper-full-sft-$(date +%Y%m%d-%H%M%S)}"
+WANDB_MODE="${WANDB_MODE:-online}"
 
 if [[ "${NUM_PROCESSES}" != "4" ]]; then
   echo "Paper alignment requires NUM_PROCESSES=4 for effective global batch size 4." >&2
@@ -31,12 +36,25 @@ if ! "${PYTHON_BIN}" -c "import liger_kernel" >/dev/null 2>&1; then
   echo "liger-kernel is required for the paper-aligned run." >&2
   exit 1
 fi
+if [[ "${REPORT_TO}" == "wandb" ]] && ! "${PYTHON_BIN}" -c "import wandb" >/dev/null 2>&1; then
+  echo "wandb is required when REPORT_TO=wandb. Install it or set REPORT_TO=none." >&2
+  exit 1
+fi
 
 export CUDA_VISIBLE_DEVICES="${GPU_SET}"
 export TOKENIZERS_PARALLELISM=false
 export NCCL_DEBUG="${NCCL_DEBUG:-WARN}"
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
+export WANDB_PROJECT WANDB_RUN_NAME WANDB_MODE
+export WANDB_WATCH="${WANDB_WATCH:-false}"
+export WANDB_LOG_MODEL="${WANDB_LOG_MODEL:-false}"
+if [[ -n "${WANDB_ENTITY}" ]]; then
+  export WANDB_ENTITY
+fi
 mkdir -p "${OUTPUT_DIR}"
+
+echo "Training progress is shown by tqdm on the main process."
+echo "Reporting: ${REPORT_TO}; run: ${WANDB_RUN_NAME}; mode: ${WANDB_MODE}"
 
 ${ACCELERATE_BIN} \
   --num_processes "${NUM_PROCESSES}" \
@@ -67,6 +85,7 @@ ${ACCELERATE_BIN} \
   --fsdp "full_shard auto_wrap" \
   --fsdp-transformer-layer-cls-to-wrap Qwen3DecoderLayer \
   --bf16 \
-  --report-to none
+  --report-to "${REPORT_TO}" \
+  --run-name "${WANDB_RUN_NAME}"
 
 echo "Paper-aligned full SFT model: ${OUTPUT_DIR}"

@@ -70,6 +70,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gradient-checkpointing", action="store_true")
     parser.add_argument("--bf16", action="store_true")
     parser.add_argument("--report-to", type=str, default="none")
+    parser.add_argument("--run-name", type=str, default=None)
+    parser.add_argument("--disable-progress-bar", action="store_true")
     parser.add_argument("--resume-from-checkpoint", type=str, default=None)
     parser.add_argument("--max-train-samples", type=int, default=None)
     parser.add_argument("--max-eval-samples", type=int, default=None)
@@ -215,6 +217,8 @@ def main() -> None:
         bf16=args.bf16 or args.use_4bit,
         fp16=not (args.bf16 or args.use_4bit),
         report_to=args.report_to,
+        run_name=args.run_name,
+        disable_tqdm=args.disable_progress_bar,
         remove_unused_columns=False,
         gradient_checkpointing=args.gradient_checkpointing,
         ddp_find_unused_parameters=False,

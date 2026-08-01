@@ -89,6 +89,27 @@ bash scripts/srt/run_generate_traces_vllm_4gpu.sh
 
 The launcher rejects adapter-only model directories. The default output is `traces_train_full_1init_3revision.jsonl` plus a summary and intermediate generation/verification files.
 
+To generate the initial SQL with Qwen3-4B-Instruct-2507 and revise it with
+Qwen3-Coder-30B-A3B-Instruct through one OpenAI-compatible endpoint:
+
+```bash
+export OPENAI_BASE_URL=https://your-api-host/v1
+export OPENAI_API_KEY=your-api-key
+export PROMPT_TOKENIZER_PATH=/data/model/Qwen3-4B-Instruct-2507
+bash scripts/srt/run_generate_traces_dual_api.sh
+```
+
+For separate providers, set `PHASE1_INIT_API_BASE_URL`, `PHASE1_INIT_API_KEY`,
+`PHASE1_REVISION_API_BASE_URL`, and `PHASE1_REVISION_API_KEY`. Override the API model
+identifiers with `INIT_MODEL` and `REVISION_MODEL` when the provider uses different names.
+`PROMPT_TOKENIZER_PATH` is only loaded locally to render and measure the raw Qwen prompt;
+model inference remains remote.
+
+The endpoint must implement `POST /v1/completions` with string `prompt`, `n`, and
+`choices[].text`. Raw completions preserve the paper's same-assistant continuation;
+`/v1/chat/completions` would introduce a new assistant turn and is intentionally not used.
+This dual-model path is a teacher-assisted experiment rather than strict self-distillation.
+
 Inspect at least these summary fields before training:
 
 - `init_correct_ratio`

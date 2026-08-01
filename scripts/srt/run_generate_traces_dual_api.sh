@@ -3,6 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# API model IDs are case-sensitive; EAS exposes the 4B model with this spelling.
 INIT_MODEL="${INIT_MODEL:-Qwen3-4B-Instruct-2507}"
 REVISION_MODEL="${REVISION_MODEL:-qwen3-coder-30b-a3b-instruct}"
 PROMPT_TOKENIZER_PATH="${PROMPT_TOKENIZER_PATH:-/data/model/Qwen3-4B-Instruct-2507}"

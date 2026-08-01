@@ -89,19 +89,23 @@ bash scripts/srt/run_generate_traces_vllm_4gpu.sh
 
 The launcher rejects adapter-only model directories. The default output is `traces_train_full_1init_3revision.jsonl` plus a summary and intermediate generation/verification files.
 
-To generate the initial SQL with `qwen3-8b` and revise it with
-`qwen3-coder-30b-a3b-instruct` through one OpenAI-compatible endpoint:
+To generate the initial SQL with an EAS-hosted `Qwen3-4B-Instruct-2507` and
+revise it with `qwen3-coder-30b-a3b-instruct` through Model Studio, configure
+the two OpenAI-compatible endpoints separately:
 
 ```bash
-export OPENAI_BASE_URL=https://your-api-host/v1
-export OPENAI_API_KEY=your-api-key
+export PHASE1_INIT_API_BASE_URL=http://your-eas-host/api/predict/your-eas-service
+export PHASE1_INIT_API_KEY=your-eas-service-token
+export PHASE1_REVISION_API_BASE_URL=https://your-workspace.cn-beijing.maas.aliyuncs.com/compatible-mode/v1
+export PHASE1_REVISION_API_KEY=your-model-studio-api-key
 export PROMPT_TOKENIZER_PATH=/data/model/Qwen3-4B-Instruct-2507
 bash scripts/srt/run_generate_traces_dual_api.sh
 ```
 
-For separate providers, set `PHASE1_INIT_API_BASE_URL`, `PHASE1_INIT_API_KEY`,
-`PHASE1_REVISION_API_BASE_URL`, and `PHASE1_REVISION_API_KEY`. Override the API model
-identifiers with `INIT_MODEL` and `REVISION_MODEL` when the provider uses different names.
+The EAS base URL ends at the service name; the launcher adds `/v1/chat/completions`.
+For a shared provider, `OPENAI_BASE_URL` and `OPENAI_API_KEY` remain supported.
+Override the case-sensitive API model identifiers with `INIT_MODEL` and
+`REVISION_MODEL` when a provider exposes different names.
 `PROMPT_TOKENIZER_PATH` is only loaded locally to render the downstream Qwen3-4B
 training prompt and measure context length; model inference remains remote.
 

@@ -3,8 +3,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-INIT_MODEL="${INIT_MODEL:-Qwen3-4B-Instruct-2507}"
-REVISION_MODEL="${REVISION_MODEL:-Qwen3-Coder-30B-A3B-Instruct}"
+INIT_MODEL="${INIT_MODEL:-qwen3-8b}"
+REVISION_MODEL="${REVISION_MODEL:-qwen3-coder-30b-a3b-instruct}"
 PROMPT_TOKENIZER_PATH="${PROMPT_TOKENIZER_PATH:-/data/model/Qwen3-4B-Instruct-2507}"
 
 INIT_API_BASE_URL="${PHASE1_INIT_API_BASE_URL:-${OPENAI_BASE_URL:-}}"
@@ -23,8 +23,8 @@ if [[ -z "${PHASE1_REVISION_API_KEY:-}" && -n "${PHASE1_INIT_API_KEY:-}" ]]; the
 fi
 
 INPUT_JSONL="${INPUT_JSONL:-/home/pkuccadm/huwenp/emb/lxy/M-Schema/ches_train_sft.jsonl}"
-OUTPUT_JSONL="${OUTPUT_JSONL:-/data/huwenp/emb/lxy/sd-zero-sql/data/srt/traces_train_api_4binit_coder30brev.jsonl}"
-SUMMARY_JSON="${SUMMARY_JSON:-/data/huwenp/emb/lxy/sd-zero-sql/data/srt/traces_train_api_4binit_coder30brev_summary.json}"
+OUTPUT_JSONL="${OUTPUT_JSONL:-/data/huwenp/emb/lxy/sd-zero-sql/data/srt/traces_train_api_8binit_coder30brev.jsonl}"
+SUMMARY_JSON="${SUMMARY_JSON:-/data/huwenp/emb/lxy/sd-zero-sql/data/srt/traces_train_api_8binit_coder30brev_summary.json}"
 PYTHON_BIN="${PYTHON_BIN:-/home/pkuccadm/anaconda3/bin/python}"
 
 export TOKENIZERS_PARALLELISM=false

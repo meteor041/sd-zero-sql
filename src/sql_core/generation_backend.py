@@ -1,7 +1,7 @@
 import json
 import time
 from concurrent.futures import ThreadPoolExecutor
-from typing import List
+from typing import Dict, List
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -114,7 +114,9 @@ class VLLMGenerator:
         return flattened
 
 
-class OpenAICompletionsGenerator:
+class OpenAIChatCompletionsGenerator:
+    uses_chat_messages = True
+
     def __init__(
         self,
         model_path: str,
@@ -143,24 +145,24 @@ class OpenAICompletionsGenerator:
         self.timeout = timeout
         self.max_retries = max_retries
         self.api_key = api_key
-        self.endpoint = self._completion_endpoint(api_base_url)
+        self.endpoint = self._chat_completion_endpoint(api_base_url)
         self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, use_fast=True)
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
             self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
 
     @staticmethod
-    def _completion_endpoint(api_base_url: str) -> str:
+    def _chat_completion_endpoint(api_base_url: str) -> str:
         base_url = api_base_url.rstrip('/')
-        if base_url.endswith('/completions'):
+        if base_url.endswith('/chat/completions'):
             return base_url
         if base_url.endswith('/v1'):
-            return f'{base_url}/completions'
-        return f'{base_url}/v1/completions'
+            return f'{base_url}/chat/completions'
+        return f'{base_url}/v1/chat/completions'
 
     def _request_completion(
         self,
-        prompt: str,
+        messages: List[Dict[str, str]],
         max_new_tokens: int,
         temperature: float,
         num_return_sequences: int,
@@ -169,12 +171,13 @@ class OpenAICompletionsGenerator:
         payload = json.dumps(
             {
                 'model': self.model_name,
-                'prompt': prompt,
+                'messages': messages,
                 'max_tokens': max_new_tokens,
                 'temperature': temperature,
                 'top_p': top_p,
                 'n': num_return_sequences,
                 'stream': False,
+                'enable_thinking': False,
             }
         ).encode('utf-8')
         headers = {'Content-Type': 'application/json'}
@@ -193,23 +196,51 @@ class OpenAICompletionsGenerator:
                     )
                 outputs = []
                 for choice in choices:
-                    if 'text' not in choice:
-                        raise RuntimeError('The completions API response is missing choices[].text.')
-                    outputs.append(str(choice['text']).strip())
+                    message = choice.get('message') or {}
+                    if 'content' not in message:
+                        raise RuntimeError(
+                            'The chat completions API response is missing choices[].message.content.'
+                        )
+                    outputs.append(str(message['content']).strip())
                 return outputs
             except HTTPError as exc:
                 error_body = exc.read().decode('utf-8', errors='replace')[:1000]
                 retryable = exc.code == 429 or 500 <= exc.code < 600
                 if not retryable or attempt >= self.max_retries:
                     raise RuntimeError(
-                        f'Completions API request failed with HTTP {exc.code}: {error_body}'
+                        f'Chat completions API request failed with HTTP {exc.code}: {error_body}'
                     ) from exc
             except (URLError, TimeoutError) as exc:
                 if attempt >= self.max_retries:
-                    raise RuntimeError(f'Completions API request failed after retries: {exc}') from exc
+                    raise RuntimeError(f'Chat completions API request failed after retries: {exc}') from exc
             time.sleep(min(2 ** attempt, 30))
 
-        raise RuntimeError('Completions API request exhausted retries.')
+        raise RuntimeError('Chat completions API request exhausted retries.')
+
+    def generate_messages_batch(
+        self,
+        messages_batch: List[List[Dict[str, str]]],
+        max_new_tokens: int,
+        temperature: float,
+        num_return_sequences: int = 1,
+        top_p: float = 1.0,
+    ) -> List[str]:
+        if not messages_batch:
+            return []
+
+        def generate_one(messages: List[Dict[str, str]]) -> List[str]:
+            return self._request_completion(
+                messages,
+                max_new_tokens,
+                temperature,
+                num_return_sequences,
+                top_p,
+            )
+
+        worker_count = min(self.max_concurrency, len(messages_batch))
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            grouped_outputs = list(executor.map(generate_one, messages_batch))
+        return [output for group in grouped_outputs for output in group]
 
     def generate_batch(
         self,
@@ -219,22 +250,14 @@ class OpenAICompletionsGenerator:
         num_return_sequences: int = 1,
         top_p: float = 1.0,
     ) -> List[str]:
-        if not prompts:
-            return []
-
-        def generate_one(prompt: str) -> List[str]:
-            return self._request_completion(
-                prompt,
-                max_new_tokens,
-                temperature,
-                num_return_sequences,
-                top_p,
-            )
-
-        worker_count = min(self.max_concurrency, len(prompts))
-        with ThreadPoolExecutor(max_workers=worker_count) as executor:
-            grouped_outputs = list(executor.map(generate_one, prompts))
-        return [output for group in grouped_outputs for output in group]
+        messages_batch = [[{'role': 'user', 'content': prompt}] for prompt in prompts]
+        return self.generate_messages_batch(
+            messages_batch,
+            max_new_tokens,
+            temperature,
+            num_return_sequences,
+            top_p,
+        )
 
 
 def load_generator(
@@ -262,7 +285,7 @@ def load_generator(
             max_model_len=max_model_len,
         )
     if backend in {'api', 'openai'}:
-        return OpenAICompletionsGenerator(
+        return OpenAIChatCompletionsGenerator(
             model_path=model_path,
             tokenizer_path=tokenizer_path or model_path,
             api_base_url=api_base_url or '',

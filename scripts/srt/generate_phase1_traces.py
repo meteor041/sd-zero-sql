@@ -15,7 +15,8 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from sql_core.generation_backend import load_generator
-from sql_core.prompt_builders import build_base_sql_prompt, build_revision_prompt
+from sql_core.prompt_builders import build_base_sql_prompt, build_revision_continuation_prompt
+from phase1_srt.constants import select_p_r
 from phase1_srt.trace_schema import build_trace_record
 from sql_core.sql_normalizer import normalize_sql_output
 from sql_core.sql_verifier import verify_sql
@@ -28,7 +29,11 @@ DEFAULT_SUMMARY_JSON = PROJECT_ROOT / 'data' / 'srt' / 'traces_train_smoke_summa
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description='Generate Phase 1 SRT traces for CHES SQL SFT.')
-    parser.add_argument('--model-path', type=str, default=DEFAULT_MODEL_PATH)
+    parser.add_argument('--model-path', type=str, default=DEFAULT_MODEL_PATH, help='Legacy shared model path/name.')
+    parser.add_argument('--init-model-path', type=str, default=None)
+    parser.add_argument('--revision-model-path', type=str, default=None)
+    parser.add_argument('--init-tokenizer-path', type=str, default=None)
+    parser.add_argument('--revision-tokenizer-path', type=str, default=None)
     parser.add_argument('--input-jsonl', type=Path, default=DEFAULT_INPUT_JSONL)
     parser.add_argument('--output-jsonl', type=Path, default=DEFAULT_OUTPUT_JSONL)
     parser.add_argument('--summary-json', type=Path, default=DEFAULT_SUMMARY_JSON)
@@ -44,13 +49,75 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--sampling-mode', type=str, default='head', choices=['head', 'random', 'stratified'])
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--min-per-db', type=int, default=5)
-    parser.add_argument('--backend', type=str, default='hf', choices=['hf', 'vllm'])
+    parser.add_argument('--backend', type=str, default='hf', choices=['hf', 'vllm', 'api', 'openai'], help='Legacy shared backend.')
+    parser.add_argument('--init-backend', type=str, default=None, choices=['hf', 'vllm', 'api', 'openai'])
+    parser.add_argument('--revision-backend', type=str, default=None, choices=['hf', 'vllm', 'api', 'openai'])
+    parser.add_argument('--api-base-url', type=str, default=os.environ.get('OPENAI_BASE_URL'))
+    parser.add_argument('--init-api-base-url', type=str, default=os.environ.get('PHASE1_INIT_API_BASE_URL'))
+    parser.add_argument('--revision-api-base-url', type=str, default=os.environ.get('PHASE1_REVISION_API_BASE_URL'))
+    parser.add_argument('--api-key-env', type=str, default='OPENAI_API_KEY')
+    parser.add_argument('--init-api-key-env', type=str, default='PHASE1_INIT_API_KEY')
+    parser.add_argument('--revision-api-key-env', type=str, default='PHASE1_REVISION_API_KEY')
+    parser.add_argument('--api-max-concurrency', type=int, default=8)
+    parser.add_argument('--init-api-max-concurrency', type=int, default=None)
+    parser.add_argument('--revision-api-max-concurrency', type=int, default=None)
+    parser.add_argument('--api-timeout', type=float, default=120.0)
+    parser.add_argument('--api-max-retries', type=int, default=5)
     parser.add_argument('--batch-size', type=int, default=8)
     parser.add_argument('--tensor-parallel-size', type=int, default=1)
     parser.add_argument('--gpu-memory-utilization', type=float, default=0.9)
     parser.add_argument('--max-model-len', type=int, default=8192)
     parser.add_argument('--verifier-workers', type=int, default=16)
     return parser.parse_args()
+
+
+def resolve_generation_args(args: argparse.Namespace) -> argparse.Namespace:
+    args.init_backend = args.init_backend or args.backend
+    args.revision_backend = args.revision_backend or args.init_backend
+    args.init_model_path = args.init_model_path or args.model_path
+    args.revision_model_path = args.revision_model_path or args.init_model_path
+    args.init_tokenizer_path = args.init_tokenizer_path or args.init_model_path
+    args.revision_tokenizer_path = args.revision_tokenizer_path or args.revision_model_path
+    args.init_api_base_url = args.init_api_base_url or args.api_base_url
+    args.revision_api_base_url = args.revision_api_base_url or args.api_base_url or args.init_api_base_url
+    args.init_api_max_concurrency = args.init_api_max_concurrency or args.api_max_concurrency
+    args.revision_api_max_concurrency = args.revision_api_max_concurrency or args.api_max_concurrency
+
+    for phase in ('init', 'revision'):
+        backend = getattr(args, f'{phase}_backend')
+        if backend in {'api', 'openai'} and not getattr(args, f'{phase}_api_base_url'):
+            raise ValueError(
+                f'--{phase}-api-base-url or --api-base-url is required when {phase} uses the API backend.'
+            )
+    return args
+
+
+def build_generator_config(args: argparse.Namespace, phase: str) -> Dict[str, Any]:
+    backend = getattr(args, f'{phase}_backend')
+    config: Dict[str, Any] = {
+        'backend': backend,
+        'model_path': getattr(args, f'{phase}_model_path'),
+        'max_model_len': args.max_model_len,
+    }
+    if backend == 'hf':
+        config['use_bf16'] = args.bf16
+    elif backend == 'vllm':
+        config['tensor_parallel_size'] = args.tensor_parallel_size
+        config['gpu_memory_utilization'] = args.gpu_memory_utilization
+    elif backend in {'api', 'openai'}:
+        phase_key = os.environ.get(getattr(args, f'{phase}_api_key_env'))
+        shared_key = os.environ.get(args.api_key_env)
+        config.update(
+            {
+                'tokenizer_path': getattr(args, f'{phase}_tokenizer_path'),
+                'api_base_url': getattr(args, f'{phase}_api_base_url'),
+                'api_key': phase_key or shared_key,
+                'api_max_concurrency': getattr(args, f'{phase}_api_max_concurrency'),
+                'api_timeout': args.api_timeout,
+                'api_max_retries': args.api_max_retries,
+            }
+        )
+    return config
 
 
 def load_jsonl(path: Path, max_samples: int = None) -> List[Dict]:
@@ -126,7 +193,11 @@ def append_jsonl_rows(handle, rows: List[Dict[str, Any]]) -> None:
 def init_summary_state(args: argparse.Namespace, selected_count: int, shard_count: int) -> Dict[str, Any]:
     return {
         'status': 'running',
-        'backend': args.backend,
+        'backend': args.init_backend,
+        'init_backend': args.init_backend,
+        'revision_backend': args.revision_backend,
+        'init_model': args.init_model_path,
+        'revision_model': args.revision_model_path,
         'input_jsonl': str(args.input_jsonl),
         'output_jsonl': str(args.output_jsonl),
         'selected_sample_count_before_shard': selected_count,
@@ -181,6 +252,10 @@ def materialize_summary(state: Dict[str, Any]) -> Dict[str, Any]:
     return {
         'status': state['status'],
         'backend': state['backend'],
+        'init_backend': state['init_backend'],
+        'revision_backend': state['revision_backend'],
+        'init_model': state['init_model'],
+        'revision_model': state['revision_model'],
         'input_jsonl': state['input_jsonl'],
         'output_jsonl': state['output_jsonl'],
         'selected_sample_count_before_shard': state['selected_sample_count_before_shard'],
@@ -440,7 +515,12 @@ def generate_revised_candidates(stage_rows: List[Dict[str, Any]], generator, bat
     safe_rows = []
     revision_prompts = []
     for row in stage_rows:
-        revision_prompt = build_revision_prompt(row['sample'], row['y_init'], row['verifier_init'], tokenizer=generator.tokenizer)
+        init_reward = int(row['verifier_init'].get('reward', 0))
+        revision_prompt = build_revision_continuation_prompt(
+            row['base_prompt'],
+            row['y_init'],
+            select_p_r(init_reward),
+        )
         prompt_token_length = len(generator.tokenizer(revision_prompt, add_special_tokens=False)['input_ids'])
         state['prompt_max_observed_token_length'] = max(state.get('prompt_max_observed_token_length', 0), prompt_token_length)
         if prompt_token_length + max_new_tokens > generator.max_model_len:
@@ -509,19 +589,14 @@ def finalize_traces(
 
 
 def main() -> None:
-    args = parse_args()
+    args = resolve_generation_args(parse_args())
     all_rows = load_jsonl(args.input_jsonl, None)
     selected_samples = select_samples(all_rows, args.max_samples, args.sampling_mode, args.seed, args.min_per_db)
     samples = select_shard(selected_samples, args.num_shards, args.shard_index)
 
-    generator = load_generator(
-        backend=args.backend,
-        model_path=args.model_path,
-        use_bf16=args.bf16,
-        tensor_parallel_size=args.tensor_parallel_size,
-        gpu_memory_utilization=args.gpu_memory_utilization,
-        max_model_len=args.max_model_len,
-    )
+    init_generator_config = build_generator_config(args, 'init')
+    revision_generator_config = build_generator_config(args, 'revision')
+    init_generator = load_generator(**init_generator_config)
 
     args.output_jsonl.parent.mkdir(parents=True, exist_ok=True)
     args.summary_json.parent.mkdir(parents=True, exist_ok=True)
@@ -530,7 +605,8 @@ def main() -> None:
     state = init_summary_state(args, selected_count=len(selected_samples), shard_count=len(samples))
 
     print(
-        f'Using backend={args.backend} batch_size={args.batch_size} '
+        f'Using init={args.init_backend}:{args.init_model_path} '
+        f'revision={args.revision_backend}:{args.revision_model_path} batch_size={args.batch_size} '
         f'samples={len(samples)} num_inits={args.num_inits} num_revisions={args.num_revisions} '
         f'shard={args.shard_index}/{args.num_shards}'
     )
@@ -541,7 +617,7 @@ def main() -> None:
         write_summary(args.summary_json, state)
         stage_rows = generate_init_candidates(
             samples,
-            generator,
+            init_generator,
             args.batch_size,
             args.max_new_tokens,
             args.temperature,
@@ -595,9 +671,14 @@ def main() -> None:
         state['status'] = 'generating_revised'
         set_process_title('p1-gen-rev')
         write_summary(args.summary_json, state)
+        revision_generator = (
+            init_generator
+            if revision_generator_config == init_generator_config
+            else load_generator(**revision_generator_config)
+        )
         generate_revised_candidates(
             stage_rows,
-            generator,
+            revision_generator,
             args.batch_size,
             args.max_new_tokens,
             args.temperature,

@@ -7,6 +7,8 @@ from unittest.mock import patch
 from scripts.srt.generate_phase1_traces import (
     build_generator_config,
     generate_revised_candidates,
+    init_summary_state,
+    materialize_summary,
     parse_args,
     resolve_generation_args,
 )
@@ -103,6 +105,21 @@ class OpenAICompletionsGeneratorTests(unittest.TestCase):
 
 
 class DualGeneratorConfigurationTests(unittest.TestCase):
+    def test_old_summary_state_uses_legacy_backend_fallback(self):
+        with patch.object(sys, 'argv', ['generate_phase1_traces.py']), patch.dict('os.environ', {}, clear=True):
+            args = resolve_generation_args(parse_args())
+        state = init_summary_state(args, selected_count=1, shard_count=1)
+        state['backend'] = 'vllm'
+        for field in ('init_backend', 'revision_backend', 'init_model', 'revision_model'):
+            state.pop(field)
+
+        summary = materialize_summary(state)
+
+        self.assertEqual(summary['init_backend'], 'vllm')
+        self.assertEqual(summary['revision_backend'], 'vllm')
+        self.assertIsNone(summary['init_model'])
+        self.assertIsNone(summary['revision_model'])
+
     def test_phase_specific_api_models_and_keys_are_resolved(self):
         argv = [
             'generate_phase1_traces.py',

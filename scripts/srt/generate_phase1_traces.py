@@ -249,13 +249,14 @@ def update_summary_state(state: Dict[str, Any], traces: List[Dict[str, Any]], pr
 
 def materialize_summary(state: Dict[str, Any]) -> Dict[str, Any]:
     total = state['total_traces']
+    legacy_backend = state.get('backend')
     return {
         'status': state['status'],
-        'backend': state['backend'],
-        'init_backend': state['init_backend'],
-        'revision_backend': state['revision_backend'],
-        'init_model': state['init_model'],
-        'revision_model': state['revision_model'],
+        'backend': legacy_backend,
+        'init_backend': state.get('init_backend', legacy_backend),
+        'revision_backend': state.get('revision_backend', legacy_backend),
+        'init_model': state.get('init_model'),
+        'revision_model': state.get('revision_model'),
         'input_jsonl': state['input_jsonl'],
         'output_jsonl': state['output_jsonl'],
         'selected_sample_count_before_shard': state['selected_sample_count_before_shard'],

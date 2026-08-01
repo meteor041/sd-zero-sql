@@ -56,6 +56,31 @@ def build_revision_continuation_prompt(base_prompt: str, y_init: str, p_r: str) 
     return f"{base_prompt}{y_init.strip()}\n\n{p_r}\n\n"
 
 
+def build_revision_chat_messages(
+    sample: Dict[str, Any],
+    y_init: str,
+    verifier_result: Dict[str, Any],
+) -> List[Dict[str, str]]:
+    reward = int(verifier_result.get("reward", 0))
+    p_r = select_p_r(reward)
+    messages = build_base_sql_messages(sample)
+    messages.extend(
+        [
+            {"role": "assistant", "content": y_init.strip()},
+            {
+                "role": "user",
+                "content": (
+                    "Revise the previous SQL according to this self-revision cue:\n"
+                    f"{p_r}\n\n"
+                    "Output only the revised SQL query. Do not include explanations, markdown, "
+                    "code fences, or reasoning. The output must start with SELECT or WITH."
+                ),
+            },
+        ]
+    )
+    return messages
+
+
 def build_revision_prompt(sample: Dict, y_init: str, verifier_result: Dict, tokenizer=None) -> str:
     reward = int(verifier_result.get("reward", 0))
     base_prompt = build_base_sql_prompt(sample, tokenizer=tokenizer)

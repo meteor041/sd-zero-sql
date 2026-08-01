@@ -15,7 +15,13 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from sql_core.generation_backend import load_generator
-from sql_core.prompt_builders import build_base_sql_prompt, build_revision_continuation_prompt
+from sql_core.prompt_builders import (
+    build_base_sql_messages,
+    build_base_sql_prompt,
+    build_revision_chat_messages,
+    build_revision_continuation_prompt,
+    render_chat_prompt,
+)
 from phase1_srt.constants import select_p_r
 from phase1_srt.trace_schema import build_trace_record
 from sql_core.sql_normalizer import normalize_sql_output
@@ -412,10 +418,38 @@ def record_prompt_overflow(state: Dict[str, Any], sample: Dict[str, Any], prompt
         )
 
 
+def generate_prompt_batch(
+    generator,
+    prompts: List[str],
+    messages_batch: List[List[Dict[str, str]]],
+    max_new_tokens: int,
+    temperature: float,
+    num_return_sequences: int,
+    top_p: float,
+) -> List[str]:
+    if getattr(generator, 'uses_chat_messages', False):
+        return generator.generate_messages_batch(
+            messages_batch,
+            max_new_tokens,
+            temperature,
+            num_return_sequences=num_return_sequences,
+            top_p=top_p,
+        )
+    return generator.generate_batch(
+        prompts,
+        max_new_tokens,
+        temperature,
+        num_return_sequences=num_return_sequences,
+        top_p=top_p,
+    )
+
+
 def generate_init_candidates(samples: List[Dict], generator, batch_size: int, max_new_tokens: int, temperature: float, top_p: float, num_inits: int, state: Dict[str, Any]) -> List[Dict]:
     safe_samples = []
     safe_prompts = []
+    safe_messages = []
     for sample in samples:
+        messages = build_base_sql_messages(sample)
         prompt = build_base_sql_prompt(sample, tokenizer=generator.tokenizer)
         prompt_token_length = len(generator.tokenizer(prompt, add_special_tokens=False)['input_ids'])
         state['prompt_max_observed_token_length'] = max(state.get('prompt_max_observed_token_length', 0), prompt_token_length)
@@ -424,11 +458,23 @@ def generate_init_candidates(samples: List[Dict], generator, batch_size: int, ma
             continue
         safe_samples.append(sample)
         safe_prompts.append(prompt)
+        safe_messages.append(messages)
 
     raw_outputs = []
     for start in range(0, len(safe_prompts), batch_size):
         batch_prompts = safe_prompts[start:start + batch_size]
-        raw_outputs.extend(generator.generate_batch(batch_prompts, max_new_tokens, temperature, num_return_sequences=num_inits, top_p=top_p))
+        batch_messages = safe_messages[start:start + batch_size]
+        raw_outputs.extend(
+            generate_prompt_batch(
+                generator,
+                batch_prompts,
+                batch_messages,
+                max_new_tokens,
+                temperature,
+                num_return_sequences=num_inits,
+                top_p=top_p,
+            )
+        )
 
     stage_rows = []
     for sample, prompt, output_start in zip(safe_samples, safe_prompts, range(0, len(raw_outputs), num_inits)):
@@ -515,6 +561,7 @@ def verify_stage_rows_parallel(
 def generate_revised_candidates(stage_rows: List[Dict[str, Any]], generator, batch_size: int, max_new_tokens: int, temperature: float, top_p: float, num_revisions: int, state: Dict[str, Any]) -> None:
     safe_rows = []
     revision_prompts = []
+    revision_messages_batch = []
     for row in stage_rows:
         init_reward = int(row['verifier_init'].get('reward', 0))
         revision_prompt = build_revision_continuation_prompt(
@@ -522,7 +569,17 @@ def generate_revised_candidates(stage_rows: List[Dict[str, Any]], generator, bat
             row['y_init'],
             select_p_r(init_reward),
         )
-        prompt_token_length = len(generator.tokenizer(revision_prompt, add_special_tokens=False)['input_ids'])
+        revision_messages = build_revision_chat_messages(
+            row['sample'],
+            row['y_init'],
+            row['verifier_init'],
+        )
+        measured_prompt = (
+            render_chat_prompt(generator.tokenizer, revision_messages)
+            if getattr(generator, 'uses_chat_messages', False)
+            else revision_prompt
+        )
+        prompt_token_length = len(generator.tokenizer(measured_prompt, add_special_tokens=False)['input_ids'])
         state['prompt_max_observed_token_length'] = max(state.get('prompt_max_observed_token_length', 0), prompt_token_length)
         if prompt_token_length + max_new_tokens > generator.max_model_len:
             record_prompt_overflow(state, row['sample'], prompt_token_length, stage='revision', init_index=row['init_index'])
@@ -530,11 +587,23 @@ def generate_revised_candidates(stage_rows: List[Dict[str, Any]], generator, bat
         row['revision_prompt'] = revision_prompt
         safe_rows.append(row)
         revision_prompts.append(revision_prompt)
+        revision_messages_batch.append(revision_messages)
 
     raw_revision_outputs = []
     for start in range(0, len(revision_prompts), batch_size):
         batch_prompts = revision_prompts[start:start + batch_size]
-        raw_revision_outputs.extend(generator.generate_batch(batch_prompts, max_new_tokens, temperature, num_return_sequences=num_revisions, top_p=top_p))
+        batch_messages = revision_messages_batch[start:start + batch_size]
+        raw_revision_outputs.extend(
+            generate_prompt_batch(
+                generator,
+                batch_prompts,
+                batch_messages,
+                max_new_tokens,
+                temperature,
+                num_return_sequences=num_revisions,
+                top_p=top_p,
+            )
+        )
 
     revised_rows = []
     for row, output_start in zip(safe_rows, range(0, len(raw_revision_outputs), num_revisions)):

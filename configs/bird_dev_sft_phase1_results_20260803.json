@@ -1,0 +1,38 @@
+{
+  "evaluation_config": "/home/pkuccadm/huwenp/emb/lxy/sd-zero-sql/configs/bird_dev_sft_phase1_greedy_major8_20260803.json",
+  "dataset_size": 1534,
+  "results": {
+    "sft_correct_sql": {
+      "greedy": {
+        "execution_accuracy": 0.4589308996088657,
+        "correct_count": 704,
+        "metric_file": "/data/huwenp/emb/lxy/sd-zero-sql/outputs/bird_dev_eval_sft_phase1_20260803/bird_dev_eval_sft_phase1_any4_20260803_sft_correct_sql_greedy/greedy_search_ches_chat_sql_generate_metric.json"
+      },
+      "major_at_8": {
+        "execution_accuracy": 0.4895697522816167,
+        "correct_count": 751,
+        "pass_at_8": 0.5788787483702738,
+        "pass_at_8_correct_count": 888,
+        "absolute_gain_over_greedy": 0.030638852672751,
+        "metric_file": "/data/huwenp/emb/lxy/sd-zero-sql/outputs/bird_dev_eval_sft_phase1_20260803/bird_dev_eval_sft_phase1_any4_20260803_sft_correct_sql_major_at_8/sampling_ches_chat_sql_generate_metric.json"
+      }
+    },
+    "phase1_base_lora": {
+      "greedy": {
+        "execution_accuracy": 0.13624511082138202,
+        "correct_count": 209,
+        "metric_file": "/data/huwenp/emb/lxy/sd-zero-sql/outputs/bird_dev_eval_sft_phase1_20260803/bird_dev_eval_sft_phase1_any4_20260803_phase1_base_lora_greedy/greedy_search_ches_chat_sql_generate_metric.json"
+      },
+      "major_at_8": {
+        "execution_accuracy": 0.2561929595827901,
+        "correct_count": 393,
+        "pass_at_8": 0.2646675358539765,
+        "pass_at_8_correct_count": 406,
+        "absolute_gain_over_greedy": 0.11994784876140808,
+        "metric_file": "/data/huwenp/emb/lxy/sd-zero-sql/outputs/bird_dev_eval_sft_phase1_20260803/bird_dev_eval_sft_phase1_any4_20260803_phase1_base_lora_major_at_8/sampling_ches_chat_sql_generate_metric.json"
+      }
+    }
+  },
+  "queue_log": "/data/huwenp/emb/lxy/sd-zero-sql/logs/bird_dev_eval_sft_phase1_any4_20260803.log",
+  "completed_at": "2026-08-03 23:16:21"
+}

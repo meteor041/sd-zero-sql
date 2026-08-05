@@ -28,14 +28,19 @@ ${ACCELERATE_BIN} \
   --output-dir "${OUTPUT_DIR}" \
   --max-length 8192 \
   --overlength-policy error \
+  --tuning-mode full \
   --num-train-epochs 1 \
-  --learning-rate 1e-4 \
+  --learning-rate 5e-6 \
   --weight-decay 1e-4 \
+  --adam-beta1 0.9 \
+  --adam-beta2 0.95 \
+  --optim adamw_torch \
   --warmup-ratio 0.05 \
   --lr-scheduler-type cosine \
   --per-device-train-batch-size 1 \
   --per-device-eval-batch-size 1 \
-  --gradient-accumulation-steps 2 \
+  --gradient-accumulation-steps 1 \
+  --sync-each-batch \
   --logging-steps 1 \
   --save-steps 20 \
   --eval-steps 20 \
@@ -43,6 +48,9 @@ ${ACCELERATE_BIN} \
   --seed 42 \
   --gradient-checkpointing \
   --bf16 \
+  --use-liger-kernel \
+  --fsdp "full_shard auto_wrap" \
+  --fsdp-transformer-layer-cls-to-wrap Qwen3DecoderLayer \
   --report-to none \
   --max-train-samples 128 \
   --max-eval-samples 32

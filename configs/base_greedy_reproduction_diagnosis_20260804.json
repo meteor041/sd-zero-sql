@@ -1,0 +1,32 @@
+{
+  "old_run": {
+    "execution_accuracy": 0.5378096479791395,
+    "correct_count": 825,
+    "tensor_parallel_size": 1,
+    "vllm_version": "0.17.0",
+    "prompt_system": "You are an expert Text-to-SQL model. Given a database schema, evidence, and a natural language question, generate a valid SQL query.",
+    "output_file": "/home/pkuccadm/huwenp/emb/lxy/csc_sql/outputs/base_qwen3_4b_greedy_inputseq/greedy_search_ches_chat_sql_generate.json",
+    "run_date": "2026-07-11"
+  },
+  "new_run": {
+    "execution_accuracy": 0.4810951760104302,
+    "correct_count": 738,
+    "tensor_parallel_size": 4,
+    "vllm_version": "0.17.0",
+    "prompt_system": "You are an expert Text-to-SQL model. Given a database schema, evidence, and a natural language question, generate a valid SQL query. Output only the final SQL query. Do not include explanations, markdown, code fences, or reasoning. The output must start with SELECT.",
+    "output_file": "/data/huwenp/emb/lxy/sd-zero-sql/outputs/bird_dev_eval_canonical_20260804/bird_dev_eval_canonical_any4_20260804_base_greedy/greedy_search_ches_chat_sql_generate.json",
+    "run_date": "2026-08-04"
+  },
+  "comparison": {
+    "same_actual_input_prompt_count": 0,
+    "same_actual_input_prompt_after_replacing_only_system_instruction": 1534,
+    "same_parsed_sql_count": 155,
+    "old_outputs_with_markdown_fence": 979,
+    "new_outputs_with_markdown_fence": 0,
+    "old_outputs_starting_with_select_or_with": 532,
+    "new_outputs_starting_with_select_or_with": 1534,
+    "accuracy_difference": -0.05671447196870931
+  },
+  "root_cause": "The old and new runs did not use the same actual prompt. An uncommitted 71-line modification to csc_sql/src/cscsql/model/infer.py added a hard-coded SQL-only CHES_SYSTEM_PROMPT and changed the ches_chat path. The vLLM version and base model were unchanged. Tensor parallel also differs, but its isolated effect has not been measured.",
+  "required_fair_test": "Run TP=1 and TP=4 with one explicitly pinned prompt implementation and identical generated prompt strings. Then compare Base, SFT, and Phase1 under that same prompt."
+}

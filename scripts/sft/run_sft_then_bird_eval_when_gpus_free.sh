@@ -6,8 +6,7 @@ PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 MODEL_PATH="${MODEL_PATH:-/data/model/Qwen3-4B-Instruct-2507}"
 TRAIN_FILE="${TRAIN_FILE:-/data/huwenp/emb/lxy/sd-zero-sql/data/ches_qwen3_4b_sft_from_phase1_4init_correct_sql_dbsplit_train.jsonl}"
 VALID_FILE="${VALID_FILE:-/data/huwenp/emb/lxy/sd-zero-sql/data/ches_qwen3_4b_sft_from_phase1_4init_correct_sql_dbsplit_valid.jsonl}"
-ADAPTER_OUT="${ADAPTER_OUT:-/data/huwenp/emb/lxy/sd-zero-sql/outputs/qwen3_4b_sft_from_phase1_4init_correctsql_dbsplit/adapter}"
-MERGED_OUT="${MERGED_OUT:-/data/huwenp/emb/lxy/sd-zero-sql/outputs/qwen3_4b_sft_from_phase1_4init_correctsql_dbsplit/merged}"
+MODEL_OUT="${MODEL_OUT:-/data/huwenp/emb/lxy/sd-zero-sql/outputs/qwen3_4b_sft_from_phase1_4init_correctsql_dbsplit/full_model}"
 
 GPU_SET="${GPU_SET:-4,5,6,7}"
 IFS=',' read -r -a GPU_INDICES <<< "${GPU_SET}"
@@ -29,7 +28,7 @@ DATASET_PATH="${DATASET_PATH:-/data/huwenp/emb/data/ches/dev_databases}"
 TENSOR_PARALLEL_SIZE="${TENSOR_PARALLEL_SIZE:-4}"
 GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.90}"
 
-mkdir -p "${ADAPTER_OUT}" "${MERGED_OUT}" "${LOG_DIR}" "${OUTPUT_ROOT}"
+mkdir -p "${MODEL_OUT}" "${LOG_DIR}" "${OUTPUT_ROOT}"
 export TOKENIZERS_PARALLELISM=false
 export NCCL_DEBUG="${NCCL_DEBUG:-WARN}"
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
@@ -41,7 +40,7 @@ echo "[start] log_file=${LOG_FILE}"
 echo "[config] gpu_set=${GPU_SET}"
 echo "[config] train_file=${TRAIN_FILE}"
 echo "[config] valid_file=${VALID_FILE}"
-echo "[config] merged_out=${MERGED_OUT}"
+echo "[config] model_out=${MODEL_OUT}"
 
 gpu_free() {
   mapfile -t GPU_LINES < <(nvidia-smi --query-gpu=index,memory.used,utilization.gpu --format=csv,noheader,nounits)
@@ -86,17 +85,22 @@ run_sft() {
     --model-path "${MODEL_PATH}" \
     --train-file "${TRAIN_FILE}" \
     --valid-file "${VALID_FILE}" \
-    --output-dir "${ADAPTER_OUT}" \
+    --output-dir "${MODEL_OUT}" \
     --max-length 4096 \
     --overlength-policy drop \
+    --tuning-mode full \
     --num-train-epochs 3 \
-    --learning-rate 1e-4 \
+    --learning-rate 5e-6 \
     --weight-decay 1e-4 \
+    --adam-beta1 0.9 \
+    --adam-beta2 0.95 \
+    --optim adamw_torch \
     --warmup-ratio 0.05 \
     --lr-scheduler-type cosine \
     --per-device-train-batch-size 1 \
     --per-device-eval-batch-size 1 \
     --gradient-accumulation-steps 1 \
+    --sync-each-batch \
     --logging-steps 10 \
     --save-steps 200 \
     --eval-steps 200 \
@@ -104,14 +108,10 @@ run_sft() {
     --seed 42 \
     --gradient-checkpointing \
     --bf16 \
+    --use-liger-kernel \
+    --fsdp "full_shard auto_wrap" \
+    --fsdp-transformer-layer-cls-to-wrap Qwen3DecoderLayer \
     --report-to none
-
-  "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/srt/merge_lora_adapter.py" \
-    --base-model "${MODEL_PATH}" \
-    --adapter-path "${ADAPTER_OUT}" \
-    --output-dir "${MERGED_OUT}" \
-    --torch-dtype bfloat16 \
-    --device-map auto
   echo "[sft] done $(date '+%F %T')"
 }
 
@@ -124,7 +124,7 @@ run_eval() {
   mkdir -p "${out_dir}"
   echo "[eval] mode=${mode} start=$(date '+%F %T')"
   CUDA_VISIBLE_DEVICES="${GPU_SET}" \
-  MODEL_SQL_GENERATE="${MERGED_OUT}" \
+  MODEL_SQL_GENERATE="${MODEL_OUT}" \
   DATA_ROOT="${DATA_ROOT}" \
   DATAFILE_PATH="${DATAFILE_PATH}" \
   GOLD_PATH="${GOLD_PATH}" \

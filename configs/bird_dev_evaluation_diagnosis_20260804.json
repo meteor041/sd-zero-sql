@@ -1,0 +1,52 @@
+{
+  "diagnosis": "The previously reported Phase1 scores parsed the entire init-plus-control-cue-plus-revision output as one SQL statement. Base 53.78% also used a different canonical input prompt file and is not directly comparable to raw dev.json runs.",
+  "dataset_size": 1534,
+  "results": {
+    "base_canonical_prompt_greedy": {
+      "input_file": "/home/pkuccadm/huwenp/emb/lxy/sd-zero-sql/data/eval/ches_dev_input_seq.json",
+      "execution_accuracy": 0.5378096479791395,
+      "correct_count": 825,
+      "comparable_group": "canonical_input_seq"
+    },
+    "base_raw_dev_prompt_greedy": {
+      "input_file": "/data/huwenp/emb/data/ches/dev.json",
+      "execution_accuracy": 0.0423728813559322,
+      "correct_count": 65,
+      "comparable_group": "raw_dev_rebuilt_prompt"
+    },
+    "sft_raw_dev_prompt_greedy": {
+      "input_file": "/data/huwenp/emb/data/ches/dev.json",
+      "execution_accuracy": 0.4589308996088657,
+      "correct_count": 704,
+      "comparable_group": "raw_dev_rebuilt_prompt"
+    },
+    "phase1_raw_dev_revision_extracted_greedy": {
+      "input_file": "/data/huwenp/emb/data/ches/dev.json",
+      "postprocess": "take text after the last Phase1 control cue, then normalize SQL",
+      "execution_accuracy": 0.470013037809648,
+      "correct_count": 721,
+      "comparable_group": "raw_dev_rebuilt_prompt"
+    },
+    "phase1_raw_dev_revision_extracted_major_at_8": {
+      "input_file": "/data/huwenp/emb/data/ches/dev.json",
+      "postprocess": "extract each candidate revision before execution-result voting",
+      "execution_accuracy": 0.46479791395045633,
+      "correct_count": 713,
+      "pass_at_8": 0.5391134289439374,
+      "pass_at_8_correct_count": 827,
+      "diagnostic_timeout_seconds": 10,
+      "comparable_group": "raw_dev_rebuilt_prompt"
+    }
+  },
+  "invalidated_interpretations": [
+    "Phase1 greedy 13.62% and major@8 25.62% measure parser failure on concatenated multi-stage text, not final revision SQL quality.",
+    "Comparing base canonical-prompt 53.78% directly with SFT raw-dev-prompt 45.89% attributes prompt construction differences to training."
+  ],
+  "phase1_output_format": {
+    "greedy_outputs_with_control_cue": 1128,
+    "greedy_total_outputs": 1534,
+    "major_at_8_candidates_with_control_cue": 8815,
+    "major_at_8_total_candidates": 12272
+  },
+  "recommended_next_evaluation": "Run base, SFT, and Phase1 on the same canonical ches_dev_input_seq.json. For Phase1, explicitly extract the final revision SQL before execution and voting."
+}

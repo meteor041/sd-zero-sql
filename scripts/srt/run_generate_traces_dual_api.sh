@@ -7,6 +7,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INIT_MODEL="${INIT_MODEL:-Qwen3-4B-Instruct-2507}"
 REVISION_MODEL="${REVISION_MODEL:-qwen3-coder-30b-a3b-instruct}"
 PROMPT_TOKENIZER_PATH="${PROMPT_TOKENIZER_PATH:-/data/model/Qwen3-4B-Instruct-2507}"
+MAX_MODEL_LEN="${MAX_MODEL_LEN:-16384}"
+NUM_INITS="${NUM_INITS:-1}"
+NUM_REVISIONS="${NUM_REVISIONS:-3}"
+NUM_SHARDS="${NUM_SHARDS:-1}"
+SHARD_INDEX="${SHARD_INDEX:-0}"
 
 INIT_API_BASE_URL="${PHASE1_INIT_API_BASE_URL:-${OPENAI_BASE_URL:-}}"
 REVISION_API_BASE_URL="${PHASE1_REVISION_API_BASE_URL:-${INIT_API_BASE_URL}}"
@@ -34,6 +39,9 @@ EXTRA_ARGS=()
 if [[ -n "${MAX_SAMPLES:-}" ]]; then
   EXTRA_ARGS+=(--max-samples "${MAX_SAMPLES}")
 fi
+if [[ -n "${RESUME_INIT_GENERATED:-}" ]]; then
+  EXTRA_ARGS+=(--resume-init-generated "${RESUME_INIT_GENERATED}")
+fi
 
 "${PYTHON_BIN}" "${SCRIPT_DIR}/generate_phase1_traces.py" \
   --init-backend api \
@@ -58,8 +66,10 @@ fi
   --max-new-tokens 256 \
   --temperature 0.7 \
   --top-p 1.0 \
-  --num-inits 1 \
-  --num-revisions 3 \
-  --max-model-len 8192 \
+  --num-inits "${NUM_INITS}" \
+  --num-revisions "${NUM_REVISIONS}" \
+  --num-shards "${NUM_SHARDS}" \
+  --shard-index "${SHARD_INDEX}" \
+  --max-model-len "${MAX_MODEL_LEN}" \
   --verifier-workers "${VERIFIER_WORKERS:-16}" \
   "${EXTRA_ARGS[@]}"

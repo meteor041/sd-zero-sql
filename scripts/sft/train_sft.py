@@ -12,7 +12,6 @@ if str(SRC_ROOT) not in sys.path:
 
 import torch
 from datasets import Dataset, load_dataset
-from peft import LoraConfig, get_peft_model
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
@@ -21,6 +20,12 @@ from transformers import (
     Trainer,
     TrainingArguments,
 )
+
+try:
+    from peft import LoraConfig, get_peft_model
+except ImportError:
+    LoraConfig = None
+    get_peft_model = None
 
 from phase1_srt.training_data import tokenize_completion_rows
 from sql_core.prompt_builders import build_base_sql_prompt
@@ -47,22 +52,29 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-length", type=int, default=8192)
     parser.add_argument("--overlength-policy", choices=["error", "drop"], default="error")
     parser.add_argument("--num-train-epochs", type=int, default=3)
-    parser.add_argument("--learning-rate", type=float, default=1e-4)
+    parser.add_argument("--learning-rate", type=float, default=5e-6)
     parser.add_argument("--weight-decay", type=float, default=1e-4)
+    parser.add_argument("--adam-beta1", type=float, default=0.9)
+    parser.add_argument("--adam-beta2", type=float, default=0.95)
+    parser.add_argument("--optim", type=str, default="adamw_torch")
     parser.add_argument("--warmup-ratio", type=float, default=0.05)
     parser.add_argument("--lr-scheduler-type", type=str, default="cosine")
     parser.add_argument("--per-device-train-batch-size", type=int, default=1)
     parser.add_argument("--per-device-eval-batch-size", type=int, default=1)
     parser.add_argument("--gradient-accumulation-steps", type=int, default=1)
+    parser.add_argument("--sync-each-batch", action="store_true", default=True)
+    parser.add_argument("--no-sync-each-batch", dest="sync_each_batch", action="store_false")
     parser.add_argument("--logging-steps", type=int, default=10)
     parser.add_argument("--save-steps", type=int, default=200)
     parser.add_argument("--eval-steps", type=int, default=200)
     parser.add_argument("--save-total-limit", type=int, default=3)
+    parser.add_argument("--save-only-model", action="store_true")
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--tuning-mode", choices=["full", "lora"], default=None)
+    parser.add_argument("--full-finetune", action="store_true")
     parser.add_argument("--lora-r", type=int, default=16)
     parser.add_argument("--lora-alpha", type=int, default=32)
     parser.add_argument("--lora-dropout", type=float, default=0.05)
-    parser.add_argument("--full-finetune", action="store_true")
     parser.add_argument("--use-4bit", action="store_true")
     parser.add_argument("--use-liger-kernel", action="store_true")
     parser.add_argument("--fsdp", type=str, default="")
@@ -94,6 +106,16 @@ def build_quant_config(use_4bit: bool):
         bnb_4bit_compute_dtype=torch.bfloat16,
         bnb_4bit_use_double_quant=False,
     )
+
+
+def check_optional_runtime_dependencies(use_liger_kernel: bool) -> None:
+    if use_liger_kernel:
+        try:
+            import liger_kernel  # noqa: F401
+        except ImportError as exc:
+            raise ImportError(
+                "--use-liger-kernel requires the liger-kernel package to be installed"
+            ) from exc
 
 
 def prepare_sft_example(example: Dict[str, Any], tokenizer) -> Dict[str, Any]:
@@ -131,12 +153,17 @@ def tokenize_sft_dataset(
 
 def main() -> None:
     args = parse_args()
-    if args.full_finetune and args.use_4bit:
-        raise ValueError("--full-finetune cannot be combined with --use-4bit")
-    if args.fsdp and not args.full_finetune:
-        raise ValueError("--fsdp requires --full-finetune")
+    if args.full_finetune and args.tuning_mode == "lora":
+        raise ValueError("--full-finetune cannot be combined with --tuning-mode lora")
+    tuning_mode = "full" if args.full_finetune else (args.tuning_mode or "lora")
+    if args.use_4bit and tuning_mode == "full":
+        raise ValueError("Full fine-tuning cannot be combined with --use-4bit")
+    if args.fsdp and tuning_mode != "full":
+        raise ValueError("--fsdp requires full fine-tuning")
     if args.fsdp and not args.fsdp_transformer_layer_cls_to_wrap:
         raise ValueError("--fsdp requires --fsdp-transformer-layer-cls-to-wrap")
+    check_optional_runtime_dependencies(args.use_liger_kernel)
+
     os.makedirs(args.output_dir, exist_ok=True)
     tokenizer = AutoTokenizer.from_pretrained(args.model_path, use_fast=True)
     if tokenizer.pad_token is None:
@@ -155,23 +182,25 @@ def main() -> None:
 
     quant_config = build_quant_config(args.use_4bit)
     torch_dtype = torch.bfloat16 if args.bf16 or args.use_4bit else torch.float16
-    base_model = AutoModelForCausalLM.from_pretrained(
+    model = AutoModelForCausalLM.from_pretrained(
         args.model_path,
         quantization_config=quant_config,
         torch_dtype=torch_dtype,
         trust_remote_code=True,
     )
-    base_model.config.use_cache = False
-    if args.gradient_checkpointing:
-        base_model.gradient_checkpointing_enable()
-        if hasattr(base_model, "enable_input_require_grads"):
-            base_model.enable_input_require_grads()
+    model.config.use_cache = False
 
-    if args.full_finetune:
-        model = base_model
-    else:
+    use_fsdp = tuning_mode == "full" and bool(args.fsdp)
+    if args.gradient_checkpointing and not use_fsdp:
+        model.gradient_checkpointing_enable()
+        if tuning_mode == "lora" and hasattr(model, "enable_input_require_grads"):
+            model.enable_input_require_grads()
+
+    if tuning_mode == "lora":
+        if LoraConfig is None or get_peft_model is None:
+            raise ImportError("peft is required for LoRA fine-tuning")
         model = get_peft_model(
-            base_model,
+            model,
             LoraConfig(
                 r=args.lora_r,
                 lora_alpha=args.lora_alpha,
@@ -191,28 +220,38 @@ def main() -> None:
         )
 
     fsdp_config = None
-    if args.fsdp:
+    if use_fsdp:
         fsdp_config = {
             "transformer_layer_cls_to_wrap": args.fsdp_transformer_layer_cls_to_wrap,
         }
+        if args.gradient_checkpointing:
+            fsdp_config["activation_checkpointing"] = True
+
     training_args = TrainingArguments(
         output_dir=args.output_dir,
         num_train_epochs=args.num_train_epochs,
         learning_rate=args.learning_rate,
         weight_decay=args.weight_decay,
-        adam_beta1=0.9,
-        adam_beta2=0.95,
+        adam_beta1=args.adam_beta1,
+        adam_beta2=args.adam_beta2,
+        optim=args.optim,
         warmup_ratio=args.warmup_ratio,
         lr_scheduler_type=args.lr_scheduler_type,
         per_device_train_batch_size=args.per_device_train_batch_size,
         per_device_eval_batch_size=args.per_device_eval_batch_size,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
+        accelerator_config={
+            "gradient_accumulation_kwargs": {
+                "sync_each_batch": args.sync_each_batch,
+            },
+        },
         logging_steps=args.logging_steps,
         save_steps=args.save_steps,
         eval_steps=args.eval_steps,
         eval_strategy="steps",
         save_strategy="steps",
         save_total_limit=args.save_total_limit,
+        save_only_model=args.save_only_model,
         seed=args.seed,
         bf16=args.bf16 or args.use_4bit,
         fp16=not (args.bf16 or args.use_4bit),
@@ -220,14 +259,14 @@ def main() -> None:
         run_name=args.run_name,
         disable_tqdm=args.disable_progress_bar,
         remove_unused_columns=False,
-        gradient_checkpointing=args.gradient_checkpointing,
+        gradient_checkpointing=args.gradient_checkpointing and not use_fsdp,
+        fsdp=args.fsdp if use_fsdp else "",
+        fsdp_config=fsdp_config,
+        use_liger_kernel=args.use_liger_kernel,
         ddp_find_unused_parameters=False,
         dataloader_num_workers=4,
         logging_first_step=True,
         load_best_model_at_end=False,
-        use_liger_kernel=args.use_liger_kernel,
-        fsdp=args.fsdp,
-        fsdp_config=fsdp_config,
     )
     trainer = Trainer(
         model=model,

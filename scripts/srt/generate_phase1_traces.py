@@ -43,6 +43,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--input-jsonl', type=Path, default=DEFAULT_INPUT_JSONL)
     parser.add_argument('--output-jsonl', type=Path, default=DEFAULT_OUTPUT_JSONL)
     parser.add_argument('--summary-json', type=Path, default=DEFAULT_SUMMARY_JSON)
+    parser.add_argument('--resume-init-generated', type=Path, default=None)
     parser.add_argument('--max-samples', type=int, default=None)
     parser.add_argument('--max-new-tokens', type=int, default=256)
     parser.add_argument('--temperature', type=float, default=0.7)
@@ -350,6 +351,28 @@ def materialize_stage_row(row: Dict[str, Any], *, include_verifier_init: bool = 
         record['y_revised'] = row.get('y_revised')
         record['verifier_revised'] = row.get('verifier_revised')
     return record
+
+
+def restore_init_stage_rows(path: Path, samples: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    samples_by_id = {str(sample.get('id')): sample for sample in samples}
+    restored = []
+    for record in load_jsonl(path):
+        sample_id = str(record.get('id'))
+        sample = samples_by_id.get(sample_id)
+        if sample is None:
+            raise ValueError(f'Resume init row references sample outside the selected shard: {sample_id}')
+        if record.get('db_id') != sample.get('db_id') or record.get('gold_sql') != sample.get('gold_sql'):
+            raise ValueError(f'Resume init row identity mismatch for sample {sample_id}')
+        restored.append(
+            {
+                'sample': sample,
+                'base_prompt': record.get('base_prompt') or record.get('x'),
+                'init_index': record['init_index'],
+                'raw_y_init': record['raw_y_init'],
+                'y_init': record['y_init'],
+            }
+        )
+    return restored
 
 
 def write_stage_rows(path: Path, rows: List[Dict[str, Any]], *, include_verifier_init: bool = False, include_revised: bool = False) -> None:
@@ -664,15 +687,17 @@ def main() -> None:
     selected_samples = select_samples(all_rows, args.max_samples, args.sampling_mode, args.seed, args.min_per_db)
     samples = select_shard(selected_samples, args.num_shards, args.shard_index)
 
-    init_generator_config = build_generator_config(args, 'init')
+    init_generator_config = None
+    if args.resume_init_generated is None:
+        init_generator_config = build_generator_config(args, 'init')
     revision_generator_config = build_generator_config(args, 'revision')
-    init_generator = load_generator(**init_generator_config)
 
     args.output_jsonl.parent.mkdir(parents=True, exist_ok=True)
     args.summary_json.parent.mkdir(parents=True, exist_ok=True)
     stage_output_paths = build_stage_output_paths(args.output_jsonl)
 
     state = init_summary_state(args, selected_count=len(selected_samples), shard_count=len(samples))
+    init_generator = None
 
     print(
         f'Using init={args.init_backend}:{args.init_model_path} '
@@ -682,33 +707,57 @@ def main() -> None:
     )
 
     try:
-        state['status'] = 'generating_init'
-        set_process_title('p1-gen-init')
-        write_summary(args.summary_json, state)
-        stage_rows = generate_init_candidates(
-            samples,
-            init_generator,
-            args.batch_size,
-            args.max_new_tokens,
-            args.temperature,
-            args.top_p,
-            args.num_inits,
-            state,
-        )
-        write_stage_rows(stage_output_paths['init_generated'], stage_rows)
+        if args.resume_init_generated is not None:
+            state['status'] = 'loading_init_generated'
+            set_process_title('p1-load-init')
+            write_summary(args.summary_json, state)
+            stage_rows = restore_init_stage_rows(args.resume_init_generated, samples)
+            expected_count = len(samples) * args.num_inits
+            if len(stage_rows) != expected_count:
+                raise ValueError(
+                    f'Resume init row count mismatch: expected {expected_count}, got {len(stage_rows)} '
+                    f'from {args.resume_init_generated}'
+                )
+            print(
+                json.dumps(
+                    {
+                        'status': state['status'],
+                        'sample_count': len(samples),
+                        'init_candidate_count': len(stage_rows),
+                        'resume_init_generated': str(args.resume_init_generated),
+                    },
+                    ensure_ascii=False,
+                )
+            )
+        else:
+            state['status'] = 'generating_init'
+            set_process_title('p1-gen-init')
+            write_summary(args.summary_json, state)
+            init_generator = load_generator(**init_generator_config)
+            stage_rows = generate_init_candidates(
+                samples,
+                init_generator,
+                args.batch_size,
+                args.max_new_tokens,
+                args.temperature,
+                args.top_p,
+                args.num_inits,
+                state,
+            )
+            write_stage_rows(stage_output_paths['init_generated'], stage_rows)
+            print(
+                json.dumps(
+                    {
+                        'status': state['status'],
+                        'sample_count': len(samples),
+                        'init_candidate_count': len(stage_rows),
+                        'init_generated_path': str(stage_output_paths['init_generated']),
+                    },
+                    ensure_ascii=False,
+                )
+            )
         state['processed_sample_count'] = len(samples)
         write_summary(args.summary_json, state)
-        print(
-            json.dumps(
-                {
-                    'status': state['status'],
-                    'sample_count': len(samples),
-                    'init_candidate_count': len(stage_rows),
-                    'init_generated_path': str(stage_output_paths['init_generated']),
-                },
-                ensure_ascii=False,
-            )
-        )
 
         state['status'] = 'verifying_init'
         set_process_title('p1-verify-init')
@@ -743,7 +792,7 @@ def main() -> None:
         write_summary(args.summary_json, state)
         revision_generator = (
             init_generator
-            if revision_generator_config == init_generator_config
+            if init_generator is not None and revision_generator_config == init_generator_config
             else load_generator(**revision_generator_config)
         )
         generate_revised_candidates(

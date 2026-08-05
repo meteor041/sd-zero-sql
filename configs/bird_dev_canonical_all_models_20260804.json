@@ -1,0 +1,57 @@
+{
+  "name": "bird_dev_canonical_all_models_20260804",
+  "dataset": {
+    "name": "bird",
+    "split": "dev",
+    "example_count": 1534,
+    "input_json": "/home/pkuccadm/huwenp/emb/lxy/sd-zero-sql/data/eval/ches_dev_input_seq.json",
+    "input_json_sha256": "3c2c0592fed1a6ca6b1fe31795b9b93b4a37e2732456aa5a89a354747734d8e9",
+    "gold_sql": "/data/huwenp/emb/data/ches/dev.sql",
+    "database_dir": "/data/huwenp/emb/data/ches/dev_databases"
+  },
+  "models": {
+    "base": "/data/model/Qwen3-4B-Instruct-2507",
+    "sft_correct_sql": "/data/huwenp/emb/lxy/sd-zero-sql/outputs/qwen3_4b_sft_phase1_dual_api_2init3rev_correctsql/full_model_gpu0to3",
+    "phase1_base_lora": "/data/huwenp/emb/lxy/sd-zero-sql/outputs/qwen3_4b_phase1_dual_api_2init3rev_base_lora_gpu0to3"
+  },
+  "runs": [
+    "base_greedy",
+    "base_major_at_8",
+    "sft_correct_sql_greedy",
+    "sft_correct_sql_major_at_8",
+    "phase1_base_lora_greedy_revision_extracted",
+    "phase1_base_lora_major_at_8_revision_extracted"
+  ],
+  "inference": {
+    "prompt_name": "ches_chat",
+    "system_prompt": "none",
+    "seed": 42,
+    "max_model_len": 8192,
+    "max_output_tokens": 1024,
+    "dtype": "bfloat16",
+    "tensor_parallel_size": 4,
+    "gpu_memory_utilization": 0.9,
+    "greedy": {"samples_per_question": 1, "temperature": 0.0},
+    "major_at_8": {"samples_per_question": 8, "temperature": 0.8, "vote": "SQLite execution-result majority"}
+  },
+  "phase1_postprocess": {
+    "method": "extract text after the last Phase1 control cue, normalize it as SQL, then execute and vote",
+    "control_cues": [
+      "Wait, this response is wrong. Let me correct it.",
+      "Let me rephrase the above solution."
+    ],
+    "evaluator_num_cpus": 128,
+    "evaluator_timeout_seconds": 30
+  },
+  "gpu_queue": {
+    "candidate_gpu_indices": [0, 1, 2, 3, 4, 5, 6, 7],
+    "required_gpu_count": 4,
+    "poll_seconds": 180,
+    "free_stability_seconds": 60,
+    "max_memory_used_mb": 100,
+    "max_gpu_utilization_percent": 5,
+    "retry_on_failed_or_incomplete_run": true
+  },
+  "output_root": "/data/huwenp/emb/lxy/sd-zero-sql/outputs/bird_dev_eval_canonical_20260804",
+  "queue_log": "/data/huwenp/emb/lxy/sd-zero-sql/logs/bird_dev_eval_canonical_any4_20260804.log"
+}

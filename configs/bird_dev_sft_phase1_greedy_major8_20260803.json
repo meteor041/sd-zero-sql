@@ -1,0 +1,90 @@
+{
+  "name": "bird_dev_sft_phase1_greedy_major8_20260803",
+  "created_date": "2026-08-03",
+  "dataset": {
+    "name": "bird",
+    "split": "dev",
+    "example_count": 1534,
+    "input_json": "/data/huwenp/emb/data/ches/dev.json",
+    "input_json_sha256": "630272f2b1c44d8cef2c3b246f623355cf0bbc1e832c81061df895530dfc2f06",
+    "gold_sql": "/data/huwenp/emb/data/ches/dev.sql",
+    "gold_sql_sha256": "42087d70ed96496b2746a7453e530155076564df127acd1e87d5fa710b6a3805",
+    "database_dir": "/data/huwenp/emb/data/ches/dev_databases"
+  },
+  "models": [
+    {
+      "label": "sft_correct_sql",
+      "type": "standalone_full_model",
+      "path": "/data/huwenp/emb/lxy/sd-zero-sql/outputs/qwen3_4b_sft_phase1_dual_api_2init3rev_correctsql/full_model_gpu0to3",
+      "config_sha256": "9e9f634701c8697878f40c26609bd08f8798485071626105947b19c010ebf276"
+    },
+    {
+      "label": "phase1_base_lora",
+      "type": "peft_lora",
+      "path": "/data/huwenp/emb/lxy/sd-zero-sql/outputs/qwen3_4b_phase1_dual_api_2init3rev_base_lora_gpu0to3",
+      "base_model": "/data/model/Qwen3-4B-Instruct-2507",
+      "adapter_config_sha256": "d85366c6b08fae4ed9a7df0aefc1b7016ac8545ed3f53a1d58a55844f42fa338",
+      "adapter_weights_sha256": "2679127ef2b70c8a0e536d975e512558f27fd7b8bf62fb5e6f2ef28ca75c8ff6",
+      "lora_rank": 16,
+      "lora_alpha": 32,
+      "lora_dropout": 0.05
+    }
+  ],
+  "inference": {
+    "prompt_name": "ches_chat",
+    "system_prompt": "none",
+    "few_shot_count": 0,
+    "table_linking": "none",
+    "sql_merge_model": "none",
+    "seed": 42,
+    "max_model_len": 8192,
+    "max_output_tokens": 1024,
+    "dtype": "bfloat16",
+    "tensor_parallel_size": 4,
+    "gpu_memory_utilization": 0.9,
+    "enforce_eager": true,
+    "modes": [
+      {
+        "name": "greedy",
+        "eval_mode": "greedy_search",
+        "samples_per_question": 1,
+        "temperature": 0.0
+      },
+      {
+        "name": "major_at_8",
+        "eval_mode": "major_voting",
+        "samples_per_question": 8,
+        "temperature": 0.8,
+        "vote_semantics": "majority vote by SQLite execution-result equality; invalid SQL is excluded"
+      }
+    ]
+  },
+  "execution_evaluation": {
+    "metric": "execution accuracy",
+    "num_cpus": 16,
+    "per_query_timeout_seconds": 30.0
+  },
+  "gpu_queue": {
+    "candidate_gpu_indices": [0, 1, 2, 3, 4, 5, 6, 7],
+    "required_gpu_count": 4,
+    "poll_seconds": 180,
+    "free_stability_seconds": 60,
+    "retry_seconds_after_failed_start": 180,
+    "max_memory_used_mb": 100,
+    "max_gpu_utilization_percent": 5,
+    "selection": "first four currently free GPUs; require the same four GPUs to remain free for 60 seconds; selection is repeated before each run",
+    "recovery": "completed metric files are skipped; failed or incomplete runs return to GPU polling instead of terminating the queue"
+  },
+  "implementation": {
+    "entrypoint": "/home/pkuccadm/huwenp/emb/lxy/csc_sql/bin/process/run_ches_qwen3_eval.sh",
+    "entrypoint_sha256": "3c905ebbc8541cb8e3e6d045c72f85e3f44cd750a5a23d1fb7440b060b6abf01",
+    "infer_sha256": "e4b3549b1bc5f9c788cfe5658394d2fa8d3a26039356a7db7829cf96d4f6edee",
+    "voting_sha256": "4339ffb37069e08e72218aa12d40cade4f962f93d431656a5e6455f71e564c28"
+  },
+  "known_limitations": [
+    "The major@8 implementation uses Python random.choice if all eight sampled SQL statements fail execution; that fallback is not explicitly seeded.",
+    "Phase1 is evaluated by native vLLM PEFT loading from its adapter directory; no merged copy is created."
+  ],
+  "output_root": "/data/huwenp/emb/lxy/sd-zero-sql/outputs/bird_dev_eval_sft_phase1_20260803",
+  "queue_log": "/data/huwenp/emb/lxy/sd-zero-sql/logs/bird_dev_eval_sft_phase1_any4_20260803.log"
+}

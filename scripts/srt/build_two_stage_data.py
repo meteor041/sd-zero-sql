@@ -53,6 +53,60 @@ def _dedupe_and_filter(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return output
 
 
+def _gold_fallback_record(record: Dict[str, Any]) -> Dict[str, Any]:
+    gold = record.get("gold_sql")
+    if not gold:
+        raise ValueError("gold_sql missing; cannot apply gold fallback")
+    revised = dict(record)
+    revised["y_revised"] = gold
+    revised["raw_y_revised"] = gold
+    revised["y_revised_correct"] = True
+    revised["keep"] = True
+    revised["revision_index"] = "gold"
+    verifier = dict(record.get("verifier_revised") or {})
+    verifier.update({"reward": 1, "error_type": "correct", "source": "gold"})
+    revised["verifier_revised"] = verifier
+    return revised
+
+
+def _dedupe_and_filter_gold_fallback(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Hybrid dedupe: keep real successful self-corrections as-is; for incorrect
+    inits that never produced a correct revision, fall back to gold SQL as the
+    revision target. Correct inits whose revision failed are dropped (the model
+    "un-corrected" a right answer, which is not useful SRT supervision)."""
+    normalized_all = []
+    for record in records:
+        normalized = normalize_trace_record(record)
+        validate_trace_record(normalized)
+        normalized_all.append(normalized)
+
+    groups: Dict[Tuple[Any, Any, Any], List[Dict[str, Any]]] = defaultdict(list)
+    for record in normalized_all:
+        groups[(record.get("db_id"), record.get("x"), record.get("y_init"))].append(record)
+
+    output = []
+    seen = set()
+    for group in groups.values():
+        keep_records = [r for r in group if r.get("keep")]
+        init_incorrect = any(not r["y_init_correct"] for r in group)
+        if keep_records:
+            chosen = keep_records[0]
+            source = "real"
+        elif init_incorrect:
+            chosen = _gold_fallback_record(group[0])
+            source = "gold"
+        else:
+            continue
+        key = dedupe_trace_key(chosen)
+        if key in seen:
+            continue
+        seen.add(key)
+        chosen = dict(chosen)
+        chosen["revision_source"] = source
+        output.append(chosen)
+    return output
+
+
 def _cap_traces_per_question(
     records: List[Dict[str, Any]],
     max_traces_per_question: int,
@@ -95,6 +149,24 @@ def _balance_outcomes(
     return output
 
 
+def _balance_one_to_one(
+    records: List[Dict[str, Any]],
+    rng: random.Random,
+) -> List[Dict[str, Any]]:
+    """Strict 1:1 balance: keep all of the smaller init-outcome pool and randomly
+    subsample the larger pool to match it, so correct-init == incorrect-init."""
+    incorrect = [record for record in records if not record["y_init_correct"]]
+    correct = [record for record in records if record["y_init_correct"]]
+    if not incorrect or not correct:
+        raise ValueError("One-to-one balance requires both correct-init and incorrect-init records.")
+    target = min(len(incorrect), len(correct))
+    rng.shuffle(incorrect)
+    rng.shuffle(correct)
+    output = incorrect[:target] + correct[:target]
+    rng.shuffle(output)
+    return output
+
+
 def generation_task_record(record: Dict[str, Any]) -> Dict[str, Any]:
     completion = f"{record['y_init'].strip()}\n\n{record['p_r']}\n\n{record['y_revised'].strip()}"
     return _task_record(record, "generation", record["x"], completion)
@@ -116,6 +188,7 @@ def _task_record(record: Dict[str, Any], task: str, prompt: str, completion: str
         "trace_id": trace_id,
         "task": task,
         "y_init_correct": bool(record["y_init_correct"]),
+        "revision_source": record.get("revision_source", "real"),
         "prompt": prompt,
         "completion": completion,
     }
@@ -162,14 +235,26 @@ def prepare_srt_multitask_data(
     validation_fraction: float = 0.05,
     max_traces_per_question: int = 3,
     max_correct_init_ratio: float = 0.5,
+    gold_fallback: bool = False,
+    balance_one_to_one: bool = False,
 ) -> Tuple[Path, Path, Dict[str, Any]]:
     rng = random.Random(seed)
-    records = _dedupe_and_filter(load_jsonl(input_path))
+    all_records = load_jsonl(input_path)
+    if gold_fallback:
+        records = _dedupe_and_filter_gold_fallback(all_records)
+    else:
+        records = _dedupe_and_filter(all_records)
     if not records:
         raise ValueError("No verified-correct revision traces were found.")
 
+    usable_real = sum(1 for r in records if r.get("revision_source", "real") == "real")
+    usable_gold = sum(1 for r in records if r.get("revision_source", "real") == "gold")
+
     records = _cap_traces_per_question(records, max_traces_per_question, rng)
-    records = _balance_outcomes(records, max_correct_init_ratio, rng)
+    if balance_one_to_one:
+        records = _balance_one_to_one(records, rng)
+    else:
+        records = _balance_outcomes(records, max_correct_init_ratio, rng)
     train_traces, validation_traces = _split_by_question(records, validation_fraction, rng)
     if not train_traces:
         raise ValueError("The question-level split produced an empty training set.")
@@ -184,6 +269,8 @@ def prepare_srt_multitask_data(
 
     incorrect_count = sum(not record["y_init_correct"] for record in records)
     correct_count = len(records) - incorrect_count
+    used_real = sum(1 for r in records if r.get("revision_source", "real") == "real")
+    used_gold = sum(1 for r in records if r.get("revision_source", "real") == "gold")
     summary = {
         "input_trace_file": str(input_path),
         "usable_trace_count": len(records),
@@ -191,6 +278,12 @@ def prepare_srt_multitask_data(
         "incorrect_init_trace_count": incorrect_count,
         "correct_init_trace_count": correct_count,
         "correct_init_ratio": round(correct_count / len(records), 4),
+        "usable_real_revision_count": usable_real,
+        "usable_gold_fallback_count": usable_gold,
+        "used_real_revision_count": used_real,
+        "used_gold_fallback_count": used_gold,
+        "gold_fallback": gold_fallback,
+        "balance_one_to_one": balance_one_to_one,
         "train_trace_count": len(train_traces),
         "validation_trace_count": len(validation_traces),
         "train_task_record_count": len(train_rows),
@@ -213,6 +306,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--validation-fraction", type=float, default=0.05)
     parser.add_argument("--max-traces-per-question", type=int, default=3)
     parser.add_argument("--max-correct-init-ratio", type=float, default=0.5)
+    parser.add_argument("--gold-fallback", action="store_true",
+                        help="Fall back to gold SQL as the revision target for incorrect inits "
+                             "that never self-corrected; keep real corrections where they exist.")
+    parser.add_argument("--balance-one-to-one", action="store_true",
+                        help="Strict 1:1 correct-init / incorrect-init balance (subsample the "
+                             "larger pool to the smaller one) instead of max-correct-init-ratio.")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--prefix", type=str, default=DEFAULT_PREFIX)
     return parser.parse_args()
@@ -228,6 +327,8 @@ def main() -> None:
         validation_fraction=args.validation_fraction,
         max_traces_per_question=args.max_traces_per_question,
         max_correct_init_ratio=args.max_correct_init_ratio,
+        gold_fallback=args.gold_fallback,
+        balance_one_to_one=args.balance_one_to_one,
     )
     summary_path = args.output_dir / f"{args.prefix}_summary.json"
     with open(summary_path, "w", encoding="utf-8") as handle:

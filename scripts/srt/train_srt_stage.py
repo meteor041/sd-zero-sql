@@ -53,6 +53,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--eval-steps", type=int, default=200)
     parser.add_argument("--eval-strategy", choices=["no", "steps", "epoch"], default="steps")
     parser.add_argument("--save-total-limit", type=int, default=3)
+    parser.add_argument("--load-best-model-at-end", action="store_true")
+    parser.add_argument("--metric-for-best-model", type=str, default="eval_loss")
+    parser.add_argument("--greater-is-better", action="store_true")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--lora-r", type=int, default=16)
     parser.add_argument("--lora-alpha", type=int, default=32)
@@ -227,7 +230,9 @@ def main() -> None:
         ddp_find_unused_parameters=False,
         dataloader_num_workers=4,
         logging_first_step=True,
-        load_best_model_at_end=False,
+        load_best_model_at_end=args.load_best_model_at_end,
+        metric_for_best_model=args.metric_for_best_model if args.load_best_model_at_end else None,
+        greater_is_better=args.greater_is_better if args.load_best_model_at_end else None,
     )
     data_collator = DataCollatorForSeq2Seq(
         tokenizer=tokenizer,
